@@ -1,6 +1,9 @@
+use arbitrary::{Arbitrary, Unstructured};
+
 use crate::value::Value;
 
-/// A valuable value of arbitrary shape, together with information on how to encode it.
+/// A valuable value of arbitrary shape, together with information on how to encode it. Intended for generating varied but valid encodings for testing purposes.
+#[derive(Arbitrary, Debug)]
 pub enum TestValue {
     Nil(Spaces, Nil),
 }
@@ -40,6 +43,7 @@ impl TestValue {
     }
 }
 
+#[derive(Arbitrary, Debug)]
 pub struct Spaces(Vec<Space>);
 
 impl Spaces {
@@ -57,12 +61,34 @@ impl Spaces {
 
     pub fn encode(&self, out: &mut Vec<u8>) {
         for s in &self.0 {
-            s.encode(out);
+            s.0.encode(out);
         }
     }
 }
 
-pub enum Space {
+#[derive(Debug)]
+pub struct Space(Space_);
+
+impl<'a> Arbitrary<'a> for Space {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        match Space_::arbitrary(u)? {
+            Space_::Tab => Ok(Space(Space_::Tab)),
+            Space_::LF => Ok(Space(Space_::LF)),
+            Space_::CR => Ok(Space(Space_::CR)),
+            Space_::Space => Ok(Space(Space_::Space)),
+            Space_::Comment(c) => {
+                if c.contains("\n") {
+                    Err(arbitrary::Error::IncorrectFormat)
+                } else {
+                    Ok(Space(Space_::Comment(c)))
+                }
+            }
+        }
+    }
+}
+
+#[derive(Arbitrary, Debug)]
+pub enum Space_ {
     Tab,
     LF,
     CR,
@@ -71,21 +97,23 @@ pub enum Space {
     Comment(String),
 }
 
-impl Space {
+impl Space_ {
     pub fn encode(&self, out: &mut Vec<u8>) {
         match self {
-            Space::Tab => out.push(0x09),
-            Space::LF => out.push(0x0a),
-            Space::CR => out.push(0x0d),
-            Space::Space => out.push(0x20),
-            Space::Comment(c) => {
+            Space_::Tab => out.push(0x09),
+            Space_::LF => out.push(0x0a),
+            Space_::CR => out.push(0x0d),
+            Space_::Space => out.push(0x20),
+            Space_::Comment(c) => {
                 out.push('#' as u8);
                 out.extend_from_slice(c.as_bytes());
+                out.push(0x0a);
             }
         }
     }
 }
 
+#[derive(Arbitrary, Debug)]
 pub enum Nil {
     Human,
     Compact,

@@ -1,0 +1,51 @@
+[package]
+name = "valuable_valueTake-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2018"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde = "1.0.126"
+
+[dependencies.valuable_value]
+path = ".."
+features = ["arbitrary"]
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "deserialize_valid"
+path = "fuzz_targets/deserialize_valid.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "deserialize_any"
+path = "fuzz_targets/deserialize_any.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "canonicity"
+path = "fuzz_targets/canonicity.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "partial_order"
+path = "fuzz_targets/partial_order.rs"
+test = false
+doc = false

@@ -14,8 +14,6 @@ use serde::de::{
 
 use crate::parser_helper::{self, ParserHelper};
 
-// use crate::error::{Error, Result};
-
 /// Everything that can go wrong during deserialization.
 #[derive(Error, Debug, PartialEq, Eq, Clone)]
 pub enum DecodeError {
@@ -130,6 +128,17 @@ enum Number {
 }
 
 impl<'de> VVDeserializer<'de> {
+    pub fn new(input: &'de [u8], enc: Encoding) -> Self {
+        VVDeserializer {
+            p: ParserHelper::new(input),
+            enc,
+        }
+    }
+
+    pub fn position(&self) -> usize {
+        self.p.position()
+    }
+
     fn spaces(&mut self) -> Result<(), Error> {
         match self.enc {
             Canonic | Compact => {
@@ -159,7 +168,7 @@ impl<'de> VVDeserializer<'de> {
         loop {
             match self.p.next_or_end() {
                 Some(0x0a) | None => {
-                    match std::str::from_utf8(self.p.slice(start..)) {
+                    match std::str::from_utf8(self.p.slice(start..self.p.position())) {
                         Ok(_) => return Ok(()),
                         Err(_) => return self.p.fail_at_position(DecodeError::CommentNotUtf8, start),
                     }
