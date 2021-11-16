@@ -9,9 +9,7 @@ use valuable_value::{
     test_value::TestValue,
     value::Value,
     de::*,
-    ser::*,
     de,
-    ser,
 };
 
 fuzz_target!(|data: &[u8]| {

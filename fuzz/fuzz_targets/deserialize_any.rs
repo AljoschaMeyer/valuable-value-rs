@@ -4,14 +4,9 @@ use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 
 use serde::{Deserialize};
 
-use valuable_value::parser_helper;
 use valuable_value::{
-    test_value::TestValue,
     value::Value,
     de::*,
-    ser::*,
-    de,
-    ser,
 };
 
 fuzz_target!(|data: &[u8]| {

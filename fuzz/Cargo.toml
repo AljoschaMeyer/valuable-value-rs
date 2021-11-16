@@ -49,3 +49,15 @@ name = "partial_order"
 path = "fuzz_targets/partial_order.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "linear_order"
+path = "fuzz_targets/linear_order.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "equality"
+path = "fuzz_targets/equality.rs"
+test = false
+doc = false

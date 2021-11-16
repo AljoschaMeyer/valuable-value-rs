@@ -6,36 +6,45 @@ use crate::value::Value;
 #[derive(Arbitrary, Debug)]
 pub enum TestValue {
     Nil(Spaces, Nil),
+    Bool(Spaces, Bool),
 }
 
 impl TestValue {
     pub fn canonic(&self) -> bool {
         match self {
             TestValue::Nil(s, v) => s.canonic() && v.canonic(),
+            TestValue::Bool(s, v) => s.canonic() && v.canonic(),
         }
     }
 
     pub fn human(&self) -> bool {
         match self {
             TestValue::Nil(s, v) => s.human() && v.human(),
+            TestValue::Bool(s, v) => s.human() && v.human(),
         }
     }
 
     pub fn compact(&self) -> bool {
         match self {
             TestValue::Nil(s, v) => s.compact() && v.compact(),
+            TestValue::Bool(s, v) => s.compact() && v.compact(),
         }
     }
 
     pub fn to_value(&self) -> Value {
         match self {
             TestValue::Nil(_, v) => v.to_value(),
+            TestValue::Bool(_, v) => v.to_value(),
         }
     }
 
     pub fn encode(&self, out: &mut Vec<u8>) {
         match self {
             TestValue::Nil(s, v) => {
+                s.encode(out);
+                v.encode(out);
+            }
+            TestValue::Bool(s, v) => {
                 s.encode(out);
                 v.encode(out);
             }
@@ -149,6 +158,61 @@ impl Nil {
         match self {
             Nil::Human => out.extend_from_slice(b"nil"),
             Nil::Compact => out.push(0b1_010_1100),
+        }
+    }
+}
+
+#[derive(Arbitrary, Debug)]
+pub enum Bool {
+    Human(bool),
+    Compact(bool),
+}
+
+impl Bool {
+    pub fn canonic(&self) -> bool {
+        match self {
+            Bool::Human(_) => false,
+            Bool::Compact(_) => true,
+        }
+    }
+
+    pub fn human(&self) -> bool {
+        match self {
+            Bool::Human(_) => true,
+            Bool::Compact(_) => false,
+        }
+    }
+
+    pub fn compact(&self) -> bool {
+        match self {
+            Bool::Human(_) => false,
+            Bool::Compact(_) => true,
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            Bool::Human(b) => Value::Bool(*b),
+            Bool::Compact(b) => Value::Bool(*b),
+        }
+    }
+
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Bool::Human(b) => {
+                if *b {
+                    out.extend_from_slice(b"true");
+                } else {
+                    out.extend_from_slice(b"false");
+                }
+            }
+            Bool::Compact(b) => {
+                if *b {
+                    out.push(0b1_010_1110);
+                } else {
+                    out.push(0b1_010_1101);
+                }
+            }
         }
     }
 }

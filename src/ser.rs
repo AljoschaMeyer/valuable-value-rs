@@ -69,9 +69,10 @@ impl<'a> Serializer for &'a mut VVSerializer {
     type SerializeStructVariant = Self;
 
     fn serialize_bool(self, v: bool) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.output += if v { "true" } else { "false" };
-        // Ok(())
+        match self.format {
+            Format::Canonic => Ok(self.out.push(if v { 0b1_010_1110 } else { 0b1_010_1101 })),
+            Format::HumanReadable(_) => Ok(self.out.extend_from_slice(if v { b"true" } else { b"false" })),
+        }
     }
 
     // JSON does not distinguish between different sizes of integers, so all

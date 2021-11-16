@@ -10,13 +10,23 @@ use serde::{Serialize, Serializer, Deserialize, Deserializer, de::{self, Visitor
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Value {
     Nil,
+    Bool(bool),
 }
 
 use Value::*;
 
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("nil").finish()
+        match self {
+            Nil => f.debug_struct("nil").finish(),
+            Bool(b) => {
+                if *b {
+                    f.debug_struct("true").finish()
+                } else {
+                    f.debug_struct("false").finish()
+                }
+            }
+        }
     }
 }
 
@@ -25,6 +35,7 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) => true,
+            (Bool(b1), Bool(b2)) => b1 == b2,
             _ => false,
         }
     }
@@ -44,6 +55,9 @@ impl Ord for Value {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Nil, Nil) => Ordering::Equal,
+            (Nil, Bool(_)) => Ordering::Less,
+            (Bool(_), Nil) => Ordering::Greater,
+            (Bool(b1), Bool(b2)) => b1.cmp(b2),
             _ => unreachable!(),
         }
     }
@@ -54,6 +68,7 @@ impl Value {
     pub fn meaningful_partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
             (Nil, Nil) => Some(Ordering::Equal),
+            (Bool(b1), Bool(b2)) => Some(b1.cmp(b2)),
             _ => None,
         }
     }
@@ -62,6 +77,7 @@ impl Value {
     pub fn meaningful_lt(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) => false,
+            (Bool(b1), Bool(b2)) => b1.lt(b2),
             _ => false,
         }
     }
@@ -70,6 +86,7 @@ impl Value {
     pub fn meaningful_le(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) => true,
+            (Bool(b1), Bool(b2)) => b1.le(b2),
             _ => false,
         }
     }
@@ -78,6 +95,7 @@ impl Value {
     pub fn meaningful_gt(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) => false,
+            (Bool(b1), Bool(b2)) => b1.gt(b2),
             _ => false,
         }
     }
@@ -86,6 +104,7 @@ impl Value {
     pub fn meaningful_ge(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) => true,
+            (Bool(b1), Bool(b2)) => b1.ge(b2),
             _ => false,
         }
     }
@@ -94,6 +113,7 @@ impl Value {
     pub fn greatest_lower_bound(&self, other: &Self) -> Option<Self> {
         match (self, other) {
             (Nil, Nil) => Some(Nil),
+            (Bool(b1), Bool(b2)) => Some(Bool(*b1 && *b2)),
             _ => None,
         }
     }
@@ -102,6 +122,7 @@ impl Value {
     pub fn least_upper_bound(&self, other: &Self) -> Option<Self> {
         match (self, other) {
             (Nil, Nil) => Some(Nil),
+            (Bool(b1), Bool(b2)) => Some(Bool(*b1 || *b2)),
             _ => None,
         }
     }
@@ -114,6 +135,7 @@ impl Serialize for Value {
     {
         match self {
             Nil => serializer.serialize_unit(),
+            Bool(b) => serializer.serialize_bool(*b),
             _ => unimplemented!(),
         }
     }
@@ -131,6 +153,10 @@ impl<'de> Visitor<'de> for ValueVisitor {
     fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
         Ok(Nil)
     }
+
+    fn visit_bool<E: de::Error>(self, b: bool) -> Result<Self::Value, E> {
+        Ok(Bool(b))
+    }
 }
 
 impl<'de> Deserialize<'de> for Value {
@@ -139,5 +165,16 @@ impl<'de> Deserialize<'de> for Value {
         D: Deserializer<'de>,
     {
         deserializer.deserialize_any(ValueVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cmp() {
+        assert!(Nil < Bool(false));
+        assert!(Bool(false) < Bool(true));
     }
 }

@@ -7,8 +7,20 @@ use core::cmp::Ordering::*;
 use valuable_value::value::Value;
 
 fuzz_target!(|data: &[u8]| {
-    match <(Value, Value)>::arbitrary(&mut Unstructured::new(data)) {
-        Ok((v, w)) => {
+    match <(Value, Value, Value)>::arbitrary(&mut Unstructured::new(data)) {
+        Ok((v, w, x)) => {
+            if v == w {
+                assert!(v.meaningful_le(&w));
+            }
+
+            if v.meaningful_le(&w) && w.meaningful_le(&v) {
+                assert_eq!(v, w);
+            }
+
+            if v.meaningful_le(&w) && w.meaningful_le(&x) {
+                assert!(v.meaningful_le(&x));
+            }
+
             match v.meaningful_partial_cmp(&w) {
                 None => {
                     assert!(!v.meaningful_lt(&w));
@@ -33,6 +45,7 @@ fuzz_target!(|data: &[u8]| {
                     assert!(!v.meaningful_gt(&w));
                     assert!(!v.meaningful_ge(&w));
                     assert!(!v.eq(&w));
+                    assert!(v < w);
 
                     match v.greatest_lower_bound(&w) {
                         Some(glb) => assert!(glb == v || glb == w),
@@ -79,6 +92,7 @@ fuzz_target!(|data: &[u8]| {
                     assert!(v.meaningful_gt(&w));
                     assert!(v.meaningful_ge(&w));
                     assert!(!v.eq(&w));
+                    assert!(v > w);
 
                     match v.greatest_lower_bound(&w) {
                         Some(glb) => assert!(glb == v || glb == w),
