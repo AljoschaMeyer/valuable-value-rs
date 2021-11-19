@@ -18,7 +18,13 @@ fuzz_target!(|data: &[u8]| {
 
             if let Ok(v) = Value::deserialize(&mut canonic) {
                 let enc_canonic = ser::to_vec(&v, Format::Canonic).unwrap();
-                assert_eq!(enc_canonic, &input[..canonic.position()]);
+
+                if enc_canonic != &input[..canonic.position()] {
+                    println!("decoded value: {:?}", v);
+                    println!("original input: {:?}", &input[..canonic.position()]);
+                    println!("produced encoding: {:?}", enc_canonic);
+                    panic!();
+                }
             }
         }
         _ => {}

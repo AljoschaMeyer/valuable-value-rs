@@ -54,6 +54,11 @@ impl<'a> ParserHelper<'a> {
         }
     }
 
+    /// Return the total length of the input.
+    pub fn len(&self) -> usize {
+        self.input.len()
+    }
+
     /// Obtain a slice into the original input.
     pub fn slice<I: SliceIndex<[u8]>>(&self, i: I) -> &'a I::Output {
         &self.input[i]
@@ -84,6 +89,27 @@ impl<'a> ParserHelper<'a> {
     // Advance the input slice by some number of bytes.
     pub fn advance(&mut self, offset: usize) {
         self.position += offset;
+    }
+
+    /// Advance the input but only if it matches the given bytes, returns whether it did advance.
+    pub fn advance_over(&mut self, expected: &[u8]) -> bool {
+        if self.rest().starts_with(expected) {
+            self.advance(expected.len());
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    // Advance the input slice by some number of bytes, returning the given error if not enough input is available.
+    pub fn advance_or<E>(&mut self, offset: usize, e: E) -> Result<(), Error<E>> {
+        let start = self.position;
+        self.position += offset;
+        if self.len() < self.position {
+            return self.fail_at_position(e, start);
+        } else {
+            return Ok(());
+        }
     }
 
     // Consumes the next byte and returns it.
@@ -192,4 +218,20 @@ pub fn is_digit(byte: u8) -> bool {
 
 pub fn is_hex_digit(byte: u8) -> bool {
     byte.is_ascii_hexdigit()
+}
+
+pub fn is_binary_digit(byte: u8) -> bool {
+    byte == ('0' as u8) || byte == ('1' as u8)
+}
+
+pub fn is_digit_or_underscore(byte: u8) -> bool {
+    byte == ('_' as u8) || byte.is_ascii_digit()
+}
+
+pub fn is_hex_digit_or_underscore(byte: u8) -> bool {
+    byte == ('_' as u8) || is_hex_digit(byte)
+}
+
+pub fn is_binary_digit_or_underscore(byte: u8) -> bool {
+    byte == ('_' as u8) || is_binary_digit(byte)
 }

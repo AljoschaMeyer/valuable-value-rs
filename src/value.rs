@@ -1,4 +1,4 @@
-use core::cmp::Ordering;
+use core::cmp::{self, Ordering};
 
 use std::fmt;
 
@@ -11,6 +11,7 @@ use serde::{Serialize, Serializer, Deserialize, Deserializer, de::{self, Visitor
 pub enum Value {
     Nil,
     Bool(bool),
+    Int(i64),
 }
 
 use Value::*;
@@ -26,6 +27,7 @@ impl fmt::Debug for Value {
                     f.debug_struct("false").finish()
                 }
             }
+            Int(n) => n.fmt(f),
         }
     }
 }
@@ -36,6 +38,7 @@ impl PartialEq for Value {
         match (self, other) {
             (Nil, Nil) => true,
             (Bool(b1), Bool(b2)) => b1 == b2,
+            (Int(n1), Int(n2)) => n1 == n2,
             _ => false,
         }
     }
@@ -55,9 +58,14 @@ impl Ord for Value {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Nil, Nil) => Ordering::Equal,
+
             (Nil, Bool(_)) => Ordering::Less,
             (Bool(_), Nil) => Ordering::Greater,
             (Bool(b1), Bool(b2)) => b1.cmp(b2),
+
+            (Nil, Int(_)) | (Bool(_), Int(_)) => Ordering::Less,
+            (Int(_), Nil) | (Int(_), Bool(_)) => Ordering::Greater,
+            (Int(n1), Int(n2)) => n1.cmp(n2),
             _ => unreachable!(),
         }
     }
@@ -69,6 +77,7 @@ impl Value {
         match (self, other) {
             (Nil, Nil) => Some(Ordering::Equal),
             (Bool(b1), Bool(b2)) => Some(b1.cmp(b2)),
+            (Int(n1), Int(n2)) => Some(n1.cmp(n2)),
             _ => None,
         }
     }
@@ -78,6 +87,7 @@ impl Value {
         match (self, other) {
             (Nil, Nil) => false,
             (Bool(b1), Bool(b2)) => b1.lt(b2),
+            (Int(n1), Int(n2)) => n1.lt(n2),
             _ => false,
         }
     }
@@ -87,6 +97,7 @@ impl Value {
         match (self, other) {
             (Nil, Nil) => true,
             (Bool(b1), Bool(b2)) => b1.le(b2),
+            (Int(n1), Int(n2)) => n1.le(n2),
             _ => false,
         }
     }
@@ -96,6 +107,7 @@ impl Value {
         match (self, other) {
             (Nil, Nil) => false,
             (Bool(b1), Bool(b2)) => b1.gt(b2),
+            (Int(n1), Int(n2)) => n1.gt(n2),
             _ => false,
         }
     }
@@ -105,6 +117,7 @@ impl Value {
         match (self, other) {
             (Nil, Nil) => true,
             (Bool(b1), Bool(b2)) => b1.ge(b2),
+            (Int(n1), Int(n2)) => n1.ge(n2),
             _ => false,
         }
     }
@@ -114,6 +127,7 @@ impl Value {
         match (self, other) {
             (Nil, Nil) => Some(Nil),
             (Bool(b1), Bool(b2)) => Some(Bool(*b1 && *b2)),
+            (Int(n1), Int(n2)) => Some(Int(cmp::min(*n1, *n2))),
             _ => None,
         }
     }
@@ -123,6 +137,7 @@ impl Value {
         match (self, other) {
             (Nil, Nil) => Some(Nil),
             (Bool(b1), Bool(b2)) => Some(Bool(*b1 || *b2)),
+            (Int(n1), Int(n2)) => Some(Int(cmp::max(*n1, *n2))),
             _ => None,
         }
     }
@@ -136,6 +151,7 @@ impl Serialize for Value {
         match self {
             Nil => serializer.serialize_unit(),
             Bool(b) => serializer.serialize_bool(*b),
+            Int(n) => serializer.serialize_i64(*n),
             _ => unimplemented!(),
         }
     }
@@ -156,6 +172,38 @@ impl<'de> Visitor<'de> for ValueVisitor {
 
     fn visit_bool<E: de::Error>(self, b: bool) -> Result<Self::Value, E> {
         Ok(Bool(b))
+    }
+
+    fn visit_i8<E: de::Error>(self, n: i8) -> Result<Self::Value, E> {
+        Ok(Int(n as i64))
+    }
+
+    fn visit_i16<E: de::Error>(self, n: i16) -> Result<Self::Value, E> {
+        Ok(Int(n as i64))
+    }
+
+    fn visit_i32<E: de::Error>(self, n: i32) -> Result<Self::Value, E> {
+        Ok(Int(n as i64))
+    }
+
+    fn visit_i64<E: de::Error>(self, n: i64) -> Result<Self::Value, E> {
+        Ok(Int(n))
+    }
+
+    fn visit_u8<E: de::Error>(self, n: u8) -> Result<Self::Value, E> {
+        Ok(Int(n as i64))
+    }
+
+    fn visit_u16<E: de::Error>(self, n: u16) -> Result<Self::Value, E> {
+        Ok(Int(n as i64))
+    }
+
+    fn visit_u32<E: de::Error>(self, n: u32) -> Result<Self::Value, E> {
+        Ok(Int(n as i64))
+    }
+
+    fn visit_u64<E: de::Error>(self, n: u64) -> Result<Self::Value, E> {
+        Ok(Int(n as i64))
     }
 }
 

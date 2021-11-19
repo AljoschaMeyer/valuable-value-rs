@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::slice::SliceIndex;
 use std::ops::{AddAssign, MulAssign, Neg};
 use std::fmt;
@@ -12,7 +13,7 @@ use serde::de::{
     VariantAccess, Visitor,
 };
 
-use crate::parser_helper::{self, ParserHelper};
+use crate::parser_helper::{self, ParserHelper, is_hex_digit, is_digit, is_binary_digit, is_hex_digit_or_underscore, is_digit_or_underscore, is_binary_digit_or_underscore};
 
 /// Everything that can go wrong during deserialization.
 #[derive(Error, Debug, PartialEq, Eq, Clone)]
@@ -32,18 +33,20 @@ pub enum DecodeError {
     /// Encountered human-readable encoding in canonic or compact mode.
     #[error("human-readable encoding is disallowed")]
     HumanReadable,
-    #[error("expected a comment")]
-    NoComment,
     #[error("comments must be valid UTF-8")]
     CommentNotUtf8,
+    #[error("an int must have at least one digit")]
+    IntNoDigits,
+    #[error("ints must be between -2^63 and 2^63 - 1 (inclusive)")]
+    IntOutOfBounds,
+    #[error("reached end of input while decoding a compact int of width {0}")]
+    CompactIntShort(usize),
+    #[error("canonicity requires that the integer is encoded with fewer bytes")]
+    IntCanonicTooWide,
     // /// Expected a comma (`,`) to separate collection elements.
     // Comma,
     // /// Expected a colon (`:`) to separate a key from a value.
     // Colon,
-    // /// Expected a decimal digit. Didn't get one. Sad times.
-    // Digit,
-    // /// Expected hexadecimal digit as part of a unicode escape sequence in a string.
-    // HexDigit,
     // /// Expected a unicode escape (because we just parsed a unicode escape of a leading
     // /// surrogate codepoint).
     // UnicodeEscape,
@@ -62,35 +65,36 @@ pub enum DecodeError {
     // InvalidNumber,
     // /// The input contained valid json followed by at least one non-whitespace byte.
     // TrailingCharacters,
-    // /// Attempted to parse a number as an `i8` that was out of bounds.
-    // OutOfBoundsI8,
-    // /// Attempted to parse a number as an `i16` that was out of bounds.
-    // OutOfBoundsI16,
-    // /// Attempted to parse a number as an `i32` that was out of bounds.
-    // OutOfBoundsI32,
-    // /// Attempted to parse a number as an `i64` that was less than -2^53 or greater than 2^53.
-    // OutOfBoundsI64,
-    // /// Attempted to parse a number as an `u8` that was out of bounds.
-    // OutOfBoundsU8,
-    // /// Attempted to parse a number as an `u16` that was out of bounds.
-    // OutOfBoundsU16,
-    // /// Attempted to parse a number as an `u32` that was out of bounds.
-    // OutOfBoundsU32,
-    // /// Attempted to parse a number as an `u64` that was greater than 2^53.
-    // OutOfBoundsU64,
-    // // /// Chars are represented as strings that contain one unicode scalar value.
-    // // NotAChar,
-    // /// Expected a boolean, found something else.
-    // ExpectedBool,
-    // /// Expected a number, found something else.
-    // ExpectedNumber,
-    // /// Expected a string, found something else.
-    // ExpectedString,
-    /// Expected nil, found something else.
+    /// Attempted to parse a number as an `i8` that was out of bounds.
+    #[error("i8 out of bounds")]
+    OutOfBoundsI8,
+    /// Attempted to parse a number as an `i16` that was out of bounds.
+    #[error("i16 out of bounds")]
+    OutOfBoundsI16,
+    /// Attempted to parse a number as an `i32` that was out of bounds.
+    #[error("i32 out of bounds")]
+    OutOfBoundsI32,
+    /// Attempted to parse a number as an `i64` that was less than -2^53 or greater than 2^53.
+    #[error("i64 out of bounds")]
+    OutOfBoundsI64,
+    /// Attempted to parse a number as an `u8` that was out of bounds.
+    #[error("u8 out of bounds")]
+    OutOfBoundsU8,
+    /// Attempted to parse a number as an `u16` that was out of bounds.
+    #[error("u16 out of bounds")]
+    OutOfBoundsU16,
+    /// Attempted to parse a number as an `u32` that was out of bounds.
+    #[error("u32 out of bounds")]
+    OutOfBoundsU32,
+    /// Attempted to parse a number as an `u64` that was greater than 2^53.
+    #[error("u64 out of bounds")]
+    OutOfBoundsU64,
     #[error("expected nil")]
     ExpectedNil,
     #[error("expected bool")]
     ExpectedBool,
+    #[error("expected int")]
+    ExpectedInt,
     // /// Expected an array, found something else.
     // ExpectedArray,
     // /// Expected an object, found something else.
@@ -182,7 +186,7 @@ impl<'de> VVDeserializer<'de> {
 
     fn comment(&mut self) -> Result<(), Error> {
         let start = self.p.position();
-        self.p.expect_ws('#' as u8, DecodeError::NoComment)?;
+        self.p.advance(1); // #
         loop {
             match self.p.next_or_end() {
                 Some(0x0a) | None => {
@@ -201,41 +205,172 @@ impl<'de> VVDeserializer<'de> {
         self.p.peek()
     }
 
+    fn parse_nil_compact(&mut self) -> Result<(), Error> {
+        self.compact(0)?;
+        self.p.expect(0b1_010_1100, DecodeError::ExpectedNil)
+    }
+
+    fn parse_nil_human(&mut self) -> Result<(), Error> {
+        self.human(0)?;
+        self.p.expect_bytes(b"nil", DecodeError::ExpectedNil)
+    }
+
     fn parse_nil(&mut self) -> Result<(), Error> {
-        match self.p.next()? {
-            0b1_010_1100 => {
-                self.compact(1)?;
-                return Ok(());
-            }
-            0x6e => {
-                self.human(1)?;
-                return self.p.expect_bytes(b"il", DecodeError::ExpectedNil);
-            }
-            _ => return self.p.fail_at_position(DecodeError::ExpectedNil, self.p.position() - 1),
+        match self.p.peek()? {
+            0b1_010_1100 => self.parse_nil_compact(),
+            0x6e => self.parse_nil_human(),
+            _ => self.p.fail(DecodeError::ExpectedNil)?,
         }
     }
 
-    fn parse_bool(&mut self) -> Result<bool, Error> {
+    fn parse_bool_compact(&mut self) -> Result<bool, Error> {
+        self.compact(0)?;
         match self.p.next()? {
-            0b1_010_1101 => {
-                self.compact(1)?;
-                return Ok(false);
-            }
-            0b1_010_1110 => {
-                self.compact(1)?;
-                return Ok(true);
-            }
+            0b1_010_1101 => Ok(false),
+            0b1_010_1110 => Ok(true),
+            _ => self.p.fail_at_position(DecodeError::ExpectedBool, self.p.position() - 1),
+        }
+    }
+
+    fn parse_bool_human(&mut self) -> Result<bool, Error> {
+        self.human(0)?;
+        match self.p.next()? {
             0x66 => {
-                self.human(1)?;
                 self.p.expect_bytes(b"alse", DecodeError::ExpectedBool)?;
                 return Ok(false);
             }
             0x74 => {
-                self.human(1)?;
                 self.p.expect_bytes(b"rue", DecodeError::ExpectedBool)?;
                 return Ok(true);
             }
-            _ => return self.p.fail_at_position(DecodeError::ExpectedBool, self.p.position() - 1),
+            _ => self.p.fail_at_position(DecodeError::ExpectedBool, self.p.position() - 1),
+        }
+    }
+
+    fn parse_bool(&mut self) -> Result<bool, Error> {
+        match self.p.peek()? {
+            0b1_010_1101 | 0b1_010_1110 => self.parse_bool_compact(),
+            0x66 | 0x74 => self.parse_bool_human(),
+            _ => self.p.fail(DecodeError::ExpectedBool)?,
+        }
+    }
+
+    fn parse_int_compact(&mut self) -> Result<i64, Error> {
+        self.compact(0)?;
+        match self.p.next()? {
+            b if b & 0b1_111_0000 == 0b1_011_0000 => {
+                if b == 0b1_011_1111 {
+                    let start = self.p.position();
+                    self.p.advance_or(8, DecodeError::CompactIntShort(8))?;
+                    let n = i64::from_be_bytes(self.p.slice(start..start + 8).try_into().unwrap());
+                    if self.enc == Encoding::Canonic && (i32::MIN as i64) <= n && n <= (i32::MAX as i64) {
+                        return self.p.fail_at_position(DecodeError::IntCanonicTooWide, start);
+                    }
+                    return Ok(n);
+                } else if b == 0b1_011_1110 {
+                    let start = self.p.position();
+                    self.p.advance_or(4, DecodeError::CompactIntShort(4))?;
+                    let n = i32::from_be_bytes(self.p.slice(start..start + 4).try_into().unwrap()) as i64;
+                    if self.enc == Encoding::Canonic && (i16::MIN as i64) <= n && n <= (i16::MAX as i64) {
+                        return self.p.fail_at_position(DecodeError::IntCanonicTooWide, start);
+                    }
+                    return Ok(n);
+                } else if b == 0b1_011_1101 {
+                    let start = self.p.position();
+                    self.p.advance_or(2, DecodeError::CompactIntShort(2))?;
+                    let n = i16::from_be_bytes(self.p.slice(start..start + 2).try_into().unwrap()) as i64;
+                    if self.enc == Encoding::Canonic && (i8::MIN as i64) <= n && n <= (i8::MAX as i64) {
+                        return self.p.fail_at_position(DecodeError::IntCanonicTooWide, start);
+                    }
+                    return Ok(n);
+                } else if b == 0b1_011_1100 {
+                    let start = self.p.position();
+                    self.p.advance_or(1, DecodeError::CompactIntShort(1))?;
+                    let n = i8::from_be_bytes(self.p.slice(start..start + 1).try_into().unwrap()) as i64;
+                    if self.enc == Encoding::Canonic && 0 <= n && n <= 11 {
+                        return self.p.fail_at_position(DecodeError::IntCanonicTooWide, start);
+                    }
+                    return Ok(n);
+                } else {
+                    return Ok((u8::from_be_bytes([b & 0b0_000_1111])) as i64);
+                }
+            }
+            _ => self.p.fail_at_position(DecodeError::ExpectedInt, self.p.position() - 1),
+        }
+    }
+
+    fn parse_int_human(&mut self) -> Result<i64, Error> {
+        self.human(0)?;
+        let start = self.p.position();
+
+        let negative = self.p.advance_over(b"-");
+        let has_sign = negative || self.p.advance_over(b"+");
+
+        let is_hex = !has_sign && self.p.advance_over(b"0x");
+        let is_binary = !is_hex && (!has_sign && self.p.advance_over(b"0b"));
+
+        if is_hex {
+            if !is_hex_digit(self.p.peek()?) {
+                return self.p.fail(DecodeError::IntNoDigits);
+            }
+
+            let start = self.p.position();
+            self.p.skip(is_hex_digit_or_underscore);
+
+            let digits_with_underscores = unsafe { std::str::from_utf8_unchecked(self.p.slice(start..self.p.position())) };
+            let without_underscores = digits_with_underscores.replace("_", "");
+            match i64::from_str_radix(&without_underscores, 16) {
+                Ok(n) => return Ok(n),
+                Err(_) => return self.p.fail(DecodeError::IntOutOfBounds),
+            }
+        } else if is_binary {
+            if !is_binary_digit(self.p.peek()?) {
+                return self.p.fail(DecodeError::IntNoDigits);
+            }
+
+            let start = self.p.position();
+            self.p.skip(is_binary_digit_or_underscore);
+
+            let digits_with_underscores = unsafe { std::str::from_utf8_unchecked(self.p.slice(start..self.p.position())) };
+            let without_underscores = digits_with_underscores.replace("_", "");
+            match i64::from_str_radix(&without_underscores, 2) {
+                Ok(n) => return Ok(n),
+                Err(_) => return self.p.fail(DecodeError::IntOutOfBounds),
+            }
+        } else {
+            if !is_digit(self.p.peek()?) {
+                if has_sign {
+                    return self.p.fail(DecodeError::IntNoDigits);
+                } else {
+                    return self.p.fail(DecodeError::ExpectedInt);
+                }
+            }
+
+            self.p.skip(is_digit_or_underscore);
+
+            let digits_with_underscores = unsafe { std::str::from_utf8_unchecked(self.p.slice(start..self.p.position())) };
+            let without_underscores = digits_with_underscores.replace("_", "");
+            match i64::from_str_radix(&without_underscores, 10) {
+                Ok(n) => return Ok(n),
+                Err(_) => return self.p.fail(DecodeError::IntOutOfBounds),
+            }
+        }
+    }
+
+    fn parse_int(&mut self) -> Result<i64, Error> {
+        match self.p.peek()? {
+            b if b & 0b1_111_0000 == 0b1_011_0000 => self.parse_int_compact(),
+            b if b == ('+' as u8) || b == ('-' as u8) || is_digit(b) => self.parse_int_human(),
+            _ => self.p.fail(DecodeError::ExpectedInt)?,
+        }
+    }
+
+    fn parse_number(&mut self) -> Result<Number, Error> {
+        match self.p.peek()? {
+            b if b == ('+' as u8) || b == ('-' as u8) || is_digit(b) => {
+                Ok(Number::I(self.parse_int_human()?)) // TODO floats
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -503,43 +638,34 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
         V: Visitor<'de>,
     {
         match self.peek_spaces()? {
-            0b1_010_1100 | 0x6e => {
-                self.deserialize_unit(visitor)
+            0b1_010_1100 => {
+                self.parse_nil_compact()?;
+                visitor.visit_unit()
             }
-            0b1_010_1101 | 0b1_010_1110 | 0x66 | 0x74 => {
-                self.deserialize_bool(visitor)
+            0x6e => {
+                self.parse_nil_human()?;
+                visitor.visit_unit()
+            }
+
+            0b1_010_1101 | 0b1_010_1110 => visitor.visit_bool(self.parse_bool_compact()?),
+            0x66 | 0x74 => visitor.visit_bool(self.parse_bool_human()?),
+
+            b if b & 0b1_111_0000 == 0b1_011_0000 => visitor.visit_i64(self.parse_int_compact()?),
+            b if b == ('+' as u8) || b == ('-' as u8) || is_digit(b) => {
+                match self.parse_number()? {
+                    Number::I(n) => visitor.visit_i64(n),
+                    Number::F(n) => visitor.visit_f64(n),
+                }
             }
             _ => self.p.fail(DecodeError::Syntax),
         }
-        // match self.peek_ws()? {
-        //     0x66 => {
-        //         if self.rest()[1..].starts_with(b"alse") {
-        //             self.advance(5);
-        //             visitor.visit_bool(false)
-        //         } else {
-        //             self.fail(ErrorCode::Syntax)
-        //         }
-        //     }
-        //     0x74 => {
-        //         if self.rest()[1..].starts_with(b"rue") {
-        //             self.advance(4);
-        //             visitor.visit_bool(true)
-        //         } else {
-        //             self.fail(ErrorCode::Syntax)
-        //         }
-        //     }
-        //     0x22 => self.deserialize_str(visitor),
-        //     0x5B => self.deserialize_seq(visitor),
-        //     0x7B => self.deserialize_map(visitor),
-        //     0x2D | 0x30..=0x39 => self.deserialize_f64(visitor),
-        //     _ => self.fail(ErrorCode::Syntax),
-        // }
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
+        self.spaces()?;
         visitor.visit_bool(self.parse_bool()?)
     }
 
@@ -547,99 +673,105 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // let f = self.parse_int_except(
-        //     |n| n < std::i8::MIN as i64 || n > std::i8::MAX as i64,
-        //     ErrorCode::OutOfBoundsI8,
-        // )?;
-        // visitor.visit_i8(f as i8)
+        self.spaces()?;
+        let start = self.p.position();
+        let n = self.parse_int()?;
+        if n < std::i8::MIN as i64 || n > std::i8::MAX as i64 {
+            return self.p.fail_at_position(DecodeError::OutOfBoundsI8, start);
+        } else {
+            visitor.visit_i8(n as i8)
+        }
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // let f = self.parse_int()?;
-        // if f < std::i16::MIN as i64 || f > std::i16::MAX as i64 {
-        //     self.fail(ErrorCode::OutOfBoundsI16)
-        // } else {
-        //     visitor.visit_i16(f as i16)
-        // }
+        self.spaces()?;
+        let start = self.p.position();
+        let n = self.parse_int()?;
+        if n < std::i16::MIN as i64 || n > std::i16::MAX as i64 {
+            return self.p.fail_at_position(DecodeError::OutOfBoundsI16, start);
+        } else {
+            visitor.visit_i16(n as i16)
+        }
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // let f = self.parse_int()?;
-        // if f < std::i32::MIN as i64 || f > std::i32::MAX as i64 {
-        //     self.fail(ErrorCode::OutOfBoundsI32)
-        // } else {
-        //     visitor.visit_i32(f as i32)
-        // }
+        self.spaces()?;
+        let start = self.p.position();
+        let n = self.parse_int()?;
+        if n < std::i32::MIN as i64 || n > std::i32::MAX as i64 {
+            return self.p.fail_at_position(DecodeError::OutOfBoundsI32, start);
+        } else {
+            visitor.visit_i32(n as i32)
+        }
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // let f = self.parse_int()?;
-        // visitor.visit_i64(f)
+        visitor.visit_i64(self.parse_int()?)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // let f = self.parse_int()?;
-        // if f < 0 || f > std::u8::MAX as i64 {
-        //     self.fail(ErrorCode::OutOfBoundsU8)
-        // } else {
-        //     visitor.visit_u8(f as u8)
-        // }
+        self.spaces()?;
+        let start = self.p.position();
+        let n = self.parse_int()?;
+        if n < 0 || n > std::u8::MAX as i64 {
+            return self.p.fail_at_position(DecodeError::OutOfBoundsU8, start);
+        } else {
+            visitor.visit_u8(n as u8)
+        }
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // let f = self.parse_int()?;
-        // if f < 0 || f > std::u16::MAX as i64 {
-        //     self.fail(ErrorCode::OutOfBoundsU16)
-        // } else {
-        //     visitor.visit_u16(f as u16)
-        // }
+        self.spaces()?;
+        let start = self.p.position();
+        let n = self.parse_int()?;
+        if n < 0 || n > std::u16::MAX as i64 {
+            return self.p.fail_at_position(DecodeError::OutOfBoundsU16, start);
+        } else {
+            visitor.visit_u16(n as u16)
+        }
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // let f = self.parse_int()?;
-        // if f < 0 || f > std::u32::MAX as i64 {
-        //     self.fail(ErrorCode::OutOfBoundsU32)
-        // } else {
-        //     visitor.visit_u32(f as u32)
-        // }
+        self.spaces()?;
+        let start = self.p.position();
+        let n = self.parse_int()?;
+        if n < 0 || n > std::u32::MAX as i64 {
+            return self.p.fail_at_position(DecodeError::OutOfBoundsU32, start);
+        } else {
+            visitor.visit_u32(n as u32)
+        }
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // let f = self.parse_int()?;
-        // if f < 0 {
-        //     self.fail(ErrorCode::OutOfBoundsU64)
-        // } else {
-        //     visitor.visit_u64(f as u64)
-        // }
+        self.spaces()?;
+        let start = self.p.position();
+        let n = self.parse_int()?;
+        if n < 0 {
+            return self.p.fail_at_position(DecodeError::OutOfBoundsU64, start);
+        } else {
+            visitor.visit_u64(n as u64)
+        }
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -735,6 +867,7 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        self.spaces()?;
         self.parse_nil()?;
         visitor.visit_unit()
     }

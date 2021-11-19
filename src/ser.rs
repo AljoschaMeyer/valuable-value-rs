@@ -1,3 +1,4 @@
+use serde::ser::Error;
 use std::fmt;
 
 use serde::ser::{self, Serializer, Serialize};
@@ -80,47 +81,65 @@ impl<'a> Serializer for &'a mut VVSerializer {
     // will be serialized the same. Other formats, especially compact binary
     // formats, may need independent logic for the different sizes.
     fn serialize_i8(self, v: i8) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.serialize_i64(i64::from(v))
+        self.serialize_i64(i64::from(v))
     }
 
     fn serialize_i16(self, v: i16) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.serialize_i64(i64::from(v))
+        self.serialize_i64(i64::from(v))
     }
 
     fn serialize_i32(self, v: i32) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.serialize_i64(i64::from(v))
+        self.serialize_i64(i64::from(v))
     }
 
     // Not particularly efficient but this is example code anyway. A more
     // performant approach would be to use the `itoa` crate.
     fn serialize_i64(self, v: i64) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.output += &v.to_string();
-        // Ok(())
+        match self.format {
+            Format::Canonic => {
+                if 0 <= v && v <= 11 {
+                    self.out.push(0b1_011_0000 ^ (v as u8));
+                } else if -128 <= v && v <= 127 {
+                    self.out.push(0b1_011_1100);
+                    self.out.extend_from_slice(&(v as i8).to_be_bytes());
+                } else if -32768 <= v && v <= 32767 {
+                    self.out.push(0b1_011_1101);
+                    self.out.extend_from_slice(&(v as i16).to_be_bytes());
+                } else if -2147483648 <= v && v <= 2147483647 {
+                    self.out.push(0b1_011_1110);
+                    self.out.extend_from_slice(&(v as i32).to_be_bytes());
+                } else {
+                    self.out.push(0b1_011_1111);
+                    self.out.extend_from_slice(&(v as i64).to_be_bytes());
+                };
+
+                Ok(())
+            }
+            Format::HumanReadable(_) => {
+                self.out.extend_from_slice(format!("{}", v).as_bytes());
+                Ok(())
+            }
+        }
     }
 
     fn serialize_u8(self, v: u8) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.serialize_u64(u64::from(v))
+        self.serialize_u64(u64::from(v))
     }
 
     fn serialize_u16(self, v: u16) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.serialize_u64(u64::from(v))
+        self.serialize_u64(u64::from(v))
     }
 
     fn serialize_u32(self, v: u32) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.serialize_u64(u64::from(v))
+        self.serialize_u64(u64::from(v))
     }
 
     fn serialize_u64(self, v: u64) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.output += &v.to_string();
-        // Ok(())
+        if v <= (i64::MAX as u64) {
+            self.serialize_i64(v as i64)
+        } else {
+            Err(EncodeError::custom(format!("integer is not a i64: {}", v)))
+        }
     }
 
     fn serialize_f32(self, v: f32) -> Result<(), EncodeError> {

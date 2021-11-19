@@ -27,12 +27,12 @@ fuzz_target!(|data: &[u8]| {
             match Value::deserialize(&mut hybrid) {
                 Err(e) => failure(&tv, &enc, &e, "Failed to deserialize valid hybrid encoding."),
                 Ok(de_hybrid) => {
-                    assert_eq!(de_hybrid, v);
+                    test_eq(&tv, &v, &enc, &de_hybrid);
 
                     if tv.human() {
                         match Value::deserialize(&mut human_readable) {
                             Err(e) => failure(&tv, &enc, &e, "Failed to deserialize human-readable encoding."),
-                            Ok(de_human) => assert_eq!(de_human, v),
+                            Ok(de_human) => test_eq(&tv, &v, &enc, &de_human),
                         }
                     }
 
@@ -40,12 +40,12 @@ fuzz_target!(|data: &[u8]| {
                         match Value::deserialize(&mut compact) {
                             Err(e) => failure(&tv, &enc, &e, "Failed to deserialize compact encoding."),
                             Ok(de_compact) => {
-                                assert_eq!(de_compact, v);
+                                test_eq(&tv, &v, &enc, &de_compact);
 
                                 if tv.canonic() {
                                     match Value::deserialize(&mut canonic) {
                                         Err(e) => failure(&tv, &enc, &e, "Failed to deserialize canonic encoding."),
-                                        Ok(de_canonic) => assert_eq!(de_canonic, v),
+                                        Ok(de_canonic) => test_eq(&tv, &v, &enc, &de_canonic),
                                     }
                                 }
                             }
@@ -63,4 +63,14 @@ fn failure(tv: &TestValue, enc: &Vec<u8>, e: &parser_helper::Error<de::DecodeErr
     println!("{:?}", enc);
     println!("{:?}", e);
     panic!("{}", msg);
+}
+
+fn test_eq(tv: &TestValue, tvv: &Value, enc: &Vec<u8>, v: &Value) {
+    if v != tvv {
+        println!("TestValue: {:?}", tv);
+        println!("encoded: {:?}", enc);
+        println!("expected value: {:?}", tvv);
+        println!("got: {:?}", v);
+        panic!("failed roundtrip");
+    }
 }
