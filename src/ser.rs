@@ -3,6 +3,7 @@ use std::fmt;
 
 use serde::ser::{self, Serializer, Serialize};
 use thiserror::Error;
+use pretty_dtoa::{dtoa, FmtFloatConfig};
 
 /// Everything that can go wrong during serialization.
 #[derive(Error, Debug, PartialEq, Eq, Clone)]
@@ -143,14 +144,33 @@ impl<'a> Serializer for &'a mut VVSerializer {
     }
 
     fn serialize_f32(self, v: f32) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.serialize_f64(f64::from(v))
+        self.serialize_f64(f64::from(v))
     }
 
     fn serialize_f64(self, v: f64) -> Result<(), EncodeError> {
-        unimplemented!()
-        // self.output += &v.to_string();
-        // Ok(())
+        match self.format {
+            Format::HumanReadable(_) => {
+                if v.is_nan() {
+                    self.out.extend_from_slice(b"NaN");
+                    Ok(())
+                } else if v == f64::INFINITY {
+                    self.out.extend_from_slice(b"Inf");
+                    Ok(())
+                } else if v == f64::NEG_INFINITY {
+                    self.out.extend_from_slice(b"-Inf");
+                    Ok(())
+                } else {
+                    let config = FmtFloatConfig::default().add_point_zero(true);
+                    self.out.extend_from_slice(dtoa(v, config).as_bytes());
+                    Ok(())
+                }
+            }
+            Format::Canonic => {
+                self.out.push(0b1_010_1111);
+                self.out.extend_from_slice(&v.to_bits().to_be_bytes());
+                Ok(())
+            }
+        }
     }
 
     // Serialize a char as a single-character string. Other formats may
@@ -276,22 +296,43 @@ impl<'a> Serializer for &'a mut VVSerializer {
     // doesn't make a difference in JSON because the length is not represented
     // explicitly in the serialized form. Some serializers may only be able to
     // support sequences for which the length is known up front.
-    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        unimplemented!()
-        // self.output += "[";
-        // Ok(self)
+    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        match self.format {
+            Format::Canonic => {
+                match len {
+                    None => return Err(EncodeError::custom("cannot serialize a sequence of unknown length")),
+                    Some(len) => {
+                        if len <= 11 {
+                            self.out.push(0b1_101_0000 ^ (len as u8));
+                        } else if len <= u8::MAX as usize {
+                            self.out.push(0b1_101_1100);
+                            self.out.extend_from_slice(&(len as u8).to_be_bytes());
+                        } else if len <= u16::MAX as usize {
+                            self.out.push(0b1_101_1101);
+                            self.out.extend_from_slice(&(len as u16).to_be_bytes());
+                        } else if len <= u32::MAX as usize {
+                            self.out.push(0b1_101_1110);
+                            self.out.extend_from_slice(&(len as u32).to_be_bytes());
+                        } else {
+                            self.out.push(0b1_101_1111);
+                            self.out.extend_from_slice(&(len as u64).to_be_bytes());
+                        };
+
+                        return Ok(self);
+                    }
+                }
+            }
+            Format::HumanReadable(_) => {
+                self.out.push('[' as u8);
+                return Ok(self);
+            }
+        }
     }
 
-    // Tuples look just like sequences in JSON. Some formats may be able to
-    // represent tuples more efficiently by omitting the length, since tuple
-    // means that the corresponding `Deserialize implementation will know the
-    // length without needing to look at the serialized data.
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        unimplemented!()
-        // self.serialize_seq(Some(len))
+        self.serialize_seq(Some(len))
     }
 
-    // Tuple structs look just like sequences in JSON.
     fn serialize_tuple_struct(
         self,
         _name: &'static str,
@@ -355,19 +396,8 @@ impl<'a> Serializer for &'a mut VVSerializer {
     }
 }
 
-// The following 7 impls deal with the serialization of compound types like
-// sequences and maps. Serialization of such types is begun by a Serializer
-// method and followed by zero or more calls to serialize individual elements of
-// the compound type and one call to end the compound type.
-//
-// This impl is SerializeSeq so these methods are called after `serialize_seq`
-// is called on the Serializer.
-impl<'a> ser::SerializeSeq for &'a mut VVSerializer
-
-{
-    // Must match the `Ok` type of the serializer.
+impl<'a> ser::SerializeSeq for &'a mut VVSerializer {
     type Ok = ();
-    // Must match the `Error` type of the serializer.
     type Error = EncodeError;
 
     // Serialize a single element of the sequence.
@@ -375,18 +405,27 @@ impl<'a> ser::SerializeSeq for &'a mut VVSerializer
     where
         T: ?Sized + Serialize,
     {
-        unimplemented!();
-        // if !self.output.ends_with('[') {
-        //     self.output += ",";
-        // }
-        // value.serialize(&mut **self)
+        match self.format {
+            Format::Canonic => value.serialize(&mut **self),
+            Format::HumanReadable(_) => {
+                // println!("{:?}", self.out);
+                if !(self.out.last().unwrap() == &('[' as u8)) {
+                    self.out.extend_from_slice(b", ");
+                }
+                value.serialize(&mut **self)
+            }
+        }
     }
 
     // Close the sequence.
     fn end(self) -> Result<(), EncodeError> {
-        unimplemented!();
-        // self.output += "]";
-        // Ok(())
+        match self.format {
+            Format::Canonic => Ok(()),
+            Format::HumanReadable(_) => {
+                self.out.push(']' as u8);
+                Ok(())
+            }
+        }
     }
 }
 

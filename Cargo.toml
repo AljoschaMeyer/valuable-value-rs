@@ -11,4 +11,6 @@ serde = "1.0.126"
 strtod2 = "0.0.1"
 thiserror = "1.0.30"
 # panda_pile = "0.2.0"
-arbitrary = { version = "1", optional = true, features = ["derive"] }
+arbitrary = { version = "1.0.3", optional = true, features = ["derive"] }
+pretty_dtoa = "0.3.0"
+atm_parser_helper = "1.0.0"

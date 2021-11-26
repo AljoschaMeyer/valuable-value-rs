@@ -45,7 +45,7 @@ fuzz_target!(|data: &[u8]| {
                     assert!(!v.meaningful_gt(&w));
                     assert!(!v.meaningful_ge(&w));
                     assert!(!v.eq(&w));
-                    assert!(v < w);
+                    test(v < w, &v, &w, "v.meaningful_lt(w) should imply v < w");
 
                     match v.greatest_lower_bound(&w) {
                         Some(glb) => assert!(glb == v || glb == w),
@@ -92,7 +92,7 @@ fuzz_target!(|data: &[u8]| {
                     assert!(v.meaningful_gt(&w));
                     assert!(v.meaningful_ge(&w));
                     assert!(!v.eq(&w));
-                    assert!(v > w);
+                    test(v > w, &v, &w, "v.meaningful_gt(w) should imply v > w");
 
                     match v.greatest_lower_bound(&w) {
                         Some(glb) => assert!(glb == v || glb == w),
@@ -126,3 +126,11 @@ fuzz_target!(|data: &[u8]| {
         _ => {}
     }
 });
+
+fn test(b: bool, v: &Value, w: &Value, msg: &'static str) {
+    if !b {
+        println!("v: {:?}", v);
+        println!("w: {:?}", w);
+        panic!("{}", msg);
+    }
+}

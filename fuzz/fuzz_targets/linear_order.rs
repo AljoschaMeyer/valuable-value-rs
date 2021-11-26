@@ -18,7 +18,12 @@ fuzz_target!(|data: &[u8]| {
             }
 
             if v <= w && w <= x {
-                assert!(v <= x);
+                if !(v <= x) {
+                    println!("v: {:?}", v);
+                    println!("w: {:?}", w);
+                    println!("x: {:?}", x);
+                    panic!("transitivity violated, we do not have v <= w <= x");
+                }
             }
 
             assert!(v <= w || w <= v);

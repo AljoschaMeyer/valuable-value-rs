@@ -2,6 +2,7 @@ use std::convert::TryInto;
 use std::slice::SliceIndex;
 use std::ops::{AddAssign, MulAssign, Neg};
 use std::fmt;
+use std::str::FromStr;
 
 use strtod2::strtod;
 use thiserror::Error;
@@ -43,8 +44,27 @@ pub enum DecodeError {
     CompactIntShort(usize),
     #[error("canonicity requires that the integer is encoded with fewer bytes")]
     IntCanonicTooWide,
-    // /// Expected a comma (`,`) to separate collection elements.
-    // Comma,
+    #[error("reached end of input while decoding a compact float")]
+    CompactFloatShort,
+    #[error("a float must include a point")]
+    FloatNoPoint,
+    #[error("a float must have at least one digit preceding the point")]
+    FloatNoLeadingDigits,
+    #[error("a float must have at least one digit following the point")]
+    FloatNoTrailingDigits,
+    #[error("a float must have at least one digit following the exponent")]
+    FloatNoExponentDigits,
+    #[error("canonicity requires that NaN is encoded as eight 0xff bytes")]
+    CanonicNaN,
+    #[error("reached end of input while decoding a compact array of width {0}")]
+    CompactArrayShort(usize),
+    #[error("canonicity requires that the array count is encoded with fewer bytes")]
+    ArrayCanonicTooWide,
+    #[error("array count may not exceed 2^63 - 1")]
+    ArrayTooLong,
+    /// Expected a comma (`,`) to separate collection elements.
+    #[error("array items must be separated by a comma")]
+    Comma,
     // /// Expected a colon (`:`) to separate a key from a value.
     // Colon,
     // /// Expected a unicode escape (because we just parsed a unicode escape of a leading
@@ -95,8 +115,10 @@ pub enum DecodeError {
     ExpectedBool,
     #[error("expected int")]
     ExpectedInt,
-    // /// Expected an array, found something else.
-    // ExpectedArray,
+    #[error("expected float")]
+    ExpectedFloat,
+    #[error("expected array")]
+    ExpectedArray,
     // /// Expected an object, found something else.
     // ExpectedObject,
     // /// Expected an enum, found something else.
@@ -365,189 +387,240 @@ impl<'de> VVDeserializer<'de> {
         }
     }
 
-    fn parse_number(&mut self) -> Result<Number, Error> {
-        match self.p.peek()? {
-            b if b == ('+' as u8) || b == ('-' as u8) || is_digit(b) => {
-                Ok(Number::I(self.parse_int_human()?)) // TODO floats
+    fn parse_float_compact(&mut self) -> Result<f64, Error> {
+        self.compact(0)?;
+        self.p.expect(0b1_010_1111, DecodeError::ExpectedFloat)?;
+
+        let start = self.p.position();
+        self.p.advance_or(8, DecodeError::CompactFloatShort)?;
+        let n = f64::from_bits(u64::from_be_bytes(self.p.slice(start..start + 8).try_into().unwrap()));
+        if let Encoding::Canonic = self.enc {
+            if n.to_bits() != u64::MAX {
+                return self.p.fail(DecodeError::CanonicNaN);
             }
-            _ => unreachable!(),
+        }
+        return Ok(n);
+    }
+
+    fn parse_float_human(&mut self) -> Result<f64, Error> {
+        self.human(0)?;
+        let start = self.p.position();
+
+        let negative = self.p.advance_over(b"-");
+        let has_sign = negative || self.p.advance_over(b"+");
+
+        match self.p.peek()? {
+            0x49 => {
+                self.p.expect_bytes(b"Inf", DecodeError::ExpectedFloat)?;
+                return Ok(if negative { f64::NEG_INFINITY } else { f64::INFINITY });
+            }
+            0x4e => {
+                self.p.expect_bytes(b"NaN", DecodeError::ExpectedFloat)?;
+                return Ok(f64::NAN);
+            }
+            _ => {}
+        }
+
+        if !is_digit(self.p.peek()?) {
+            if has_sign {
+                return self.p.fail(DecodeError::FloatNoLeadingDigits);
+            } else {
+                return self.p.fail(DecodeError::ExpectedFloat);
+            }
+        }
+        self.p.skip(is_digit_or_underscore);
+
+        self.p.expect('.' as u8, DecodeError::FloatNoPoint)?;
+
+        if !is_digit(self.p.peek()?) {
+            return self.p.fail(DecodeError::FloatNoTrailingDigits);
+        }
+        self.p.skip(is_digit_or_underscore);
+
+        if let 0x45 | 0x65 = self.p.peek()? {
+            self.p.advance(1);
+            let negative = self.p.advance_over(b"-");
+            if !negative {
+                self.p.advance_over(b"+");
+            }
+
+            if !is_digit(self.p.peek()?) {
+                return self.p.fail(DecodeError::FloatNoExponentDigits);
+            }
+            self.p.skip(is_digit_or_underscore);
+        }
+
+        let digits_with_underscores = unsafe { std::str::from_utf8_unchecked(self.p.slice(start..self.p.position())) };
+        let without_underscores = digits_with_underscores.replace("_", "");
+        match f64::from_str(&without_underscores) {
+            Ok(n) => return Ok(n),
+            Err(_) => unreachable!("Prior parsing should have ensured a valid input to f64::from_str"),
         }
     }
 
+    fn parse_float(&mut self) -> Result<f64, Error> {
+        match self.p.peek()? {
+            0b1_010_1111 => self.parse_float_compact(),
+            0x49 | 0x4e => self.parse_float_human(),
+            b if b == ('+' as u8) || b == ('-' as u8) || is_digit(b) => self.parse_float_human(),
+            _ => self.p.fail(DecodeError::ExpectedFloat)?,
+        }
+    }
 
-    // // Parses the four characters of a unicode escape sequence and returns the codepoint they
-    // // encode. Json only allows escaping codepoints in the BMP, that's why it fits into a `u16`.
-    // fn parse_unicode_escape(&mut self) -> Result<u16, DecodeJsonError> {
-    //     let start = self.position();
-    //
-    //     for _ in 0..4 {
-    //         self.expect_pred(is_hex_digit, ErrorCode::HexDigit)?;
-    //     }
-    //
-    //     u16::from_str_radix(
-    //         unsafe { std::str::from_utf8_unchecked(&self.slice(start..start + 4)) },
-    //         16,
-    //     )
-    //     .map_err(|_| unreachable!("We already checked for valid input"))
-    // }
+    fn parse_number_human(&mut self) -> Result<Number, Error> {
+        self.human(0)?;
+        let start = self.p.position();
 
-    // fn foo(&mut self) -> Result<Number, DecodeJsonError> {
-    //     let start = self.position;
-    //     let has_sign = if self.starts_with("+") || self.starts_with("-") {
-    //         self.advance(1);
-    //         true
-    //     } else {
-    //         false
-    //     };
-    //     let is_hex = if self.starts_with("0x") {
-    //         self.advance(2);
-    //         true
-    //     } else {
-    //         false
-    //     };
-    //
-    //     if is_hex {
-    //         if !self.peek()?.is_ascii_hexdigit() {
-    //             return self.err(ParseError::HexIntNoDigits);
-    //         }
-    //         self.skip(|c: char| c.is_ascii_hexdigit());
-    //
-    //         let end = start.len() - self.position.len();
-    //         self.ws();
-    //         let raw = if has_sign {
-    //             let mut buf = start[..1].to_string();
-    //             buf.push_str(&start[3..end]);
-    //             buf
-    //         } else {
-    //             start[2..end].to_string()
-    //         };
-    //
-    //         match i64::from_str_radix(&raw, 16) {
-    //             Ok(n) => return Ok(Expression::Int(n)),
-    //             Err(_) => return self.err(ParseError::HexIntOutOfBounds),
-    //         }
-    //     } else {
-    //         if !self.peek()?.is_ascii_digit() {
-    //             return self.err(ParseError::DecIntNoDigits);
-    //         }
-    //         self.skip(|c: char| c.is_ascii_digit());
-    //
-    //         let is_float = match self.peek_or_end() {
-    //             Some('.') => {
-    //                 self.advance(1);
-    //                 true
+        let negative = self.p.advance_over(b"-");
+        let has_sign = negative || self.p.advance_over(b"+");
+
+        match self.p.peek()? {
+            0x49 => {
+                self.p.expect_bytes(b"Inf", DecodeError::ExpectedFloat)?;
+                return Ok(if negative { Number::F(f64::NEG_INFINITY) } else { Number::F(f64::INFINITY) });
+            }
+            0x4e => {
+                self.p.expect_bytes(b"NaN", DecodeError::ExpectedFloat)?;
+                return Ok(Number::F(f64::NAN));
+            }
+            _ => {}
+        }
+
+        let is_hex = !has_sign && self.p.advance_over(b"0x");
+        let is_binary = !is_hex && (!has_sign && self.p.advance_over(b"0b"));
+
+        if is_hex {
+            if !is_hex_digit(self.p.peek()?) {
+                return self.p.fail(DecodeError::IntNoDigits);
+            }
+
+            let start = self.p.position();
+            self.p.skip(is_hex_digit_or_underscore);
+
+            let digits_with_underscores = unsafe { std::str::from_utf8_unchecked(self.p.slice(start..self.p.position())) };
+            let without_underscores = digits_with_underscores.replace("_", "");
+            match i64::from_str_radix(&without_underscores, 16) {
+                Ok(n) => return Ok(Number::I(n)),
+                Err(_) => return self.p.fail(DecodeError::IntOutOfBounds),
+            }
+        } else if is_binary {
+            if !is_binary_digit(self.p.peek()?) {
+                return self.p.fail(DecodeError::IntNoDigits);
+            }
+
+            let start = self.p.position();
+            self.p.skip(is_binary_digit_or_underscore);
+
+            let digits_with_underscores = unsafe { std::str::from_utf8_unchecked(self.p.slice(start..self.p.position())) };
+            let without_underscores = digits_with_underscores.replace("_", "");
+            match i64::from_str_radix(&without_underscores, 2) {
+                Ok(n) => return Ok(Number::I(n)),
+                Err(_) => return self.p.fail(DecodeError::IntOutOfBounds),
+            }
+        } else {
+            if !is_digit(self.p.peek()?) {
+                if has_sign {
+                    return self.p.fail(DecodeError::IntNoDigits);
+                } else {
+                    return self.p.fail(DecodeError::ExpectedInt);
+                }
+            }
+
+            self.p.skip(is_digit_or_underscore);
+
+            match self.p.peek::<i8>() {
+                Ok(0x2e) => {
+                    self.p.advance(1);
+                    if !is_digit(self.p.peek()?) {
+                        return self.p.fail(DecodeError::FloatNoTrailingDigits);
+                    }
+                    self.p.skip(is_digit_or_underscore);
+
+                    if let Ok(0x45 | 0x65) = self.p.peek::<i8>() {
+                        self.p.advance(1);
+                        let negative = self.p.advance_over(b"-");
+                        if !negative {
+                            self.p.advance_over(b"+");
+                        }
+
+                        if !is_digit(self.p.peek()?) {
+                            return self.p.fail(DecodeError::FloatNoExponentDigits);
+                        }
+                        self.p.skip(is_digit_or_underscore);
+                    }
+
+                    let digits_with_underscores = unsafe { std::str::from_utf8_unchecked(self.p.slice(start..self.p.position())) };
+                    let without_underscores = digits_with_underscores.replace("_", "");
+                    match f64::from_str(&without_underscores) {
+                        Ok(n) => return Ok(Number::F(n)),
+                        Err(_) => unreachable!("Prior parsing should have ensured a valid input to f64::from_str"),
+                    }
+                }
+
+                _ => {
+                    let digits_with_underscores = unsafe { std::str::from_utf8_unchecked(self.p.slice(start..self.p.position())) };
+                    let without_underscores = digits_with_underscores.replace("_", "");
+                    match i64::from_str_radix(&without_underscores, 10) {
+                        Ok(n) => return Ok(Number::I(n)),
+                        Err(_) => return self.p.fail(DecodeError::IntOutOfBounds),
+                    }
+                }
+            }
+        }
+    }
+
+    // fn parse_int_compact(&mut self) -> Result<i64, Error> {
+    //     self.compact(0)?;
+    //     match self.p.next()? {
+    //         b if b & 0b1_111_0000 == 0b1_011_0000 => {
+    //             if b == 0b1_011_1111 {
+    //                 let start = self.p.position();
+    //                 self.p.advance_or(8, DecodeError::CompactIntShort(8))?;
+    //                 let n = i64::from_be_bytes(self.p.slice(start..start + 8).try_into().unwrap());
+    //                 if self.enc == Encoding::Canonic && (i32::MIN as i64) <= n && n <= (i32::MAX as i64) {
+    //                     return self.p.fail_at_position(DecodeError::IntCanonicTooWide, start);
+    //                 }
+    //                 return Ok(n);
+    //             } else if b == 0b1_011_1110 {
+    //                 let start = self.p.position();
+    //                 self.p.advance_or(4, DecodeError::CompactIntShort(4))?;
+    //                 let n = i32::from_be_bytes(self.p.slice(start..start + 4).try_into().unwrap()) as i64;
+    //                 if self.enc == Encoding::Canonic && (i16::MIN as i64) <= n && n <= (i16::MAX as i64) {
+    //                     return self.p.fail_at_position(DecodeError::IntCanonicTooWide, start);
+    //                 }
+    //                 return Ok(n);
+    //             } else if b == 0b1_011_1101 {
+    //                 let start = self.p.position();
+    //                 self.p.advance_or(2, DecodeError::CompactIntShort(2))?;
+    //                 let n = i16::from_be_bytes(self.p.slice(start..start + 2).try_into().unwrap()) as i64;
+    //                 if self.enc == Encoding::Canonic && (i8::MIN as i64) <= n && n <= (i8::MAX as i64) {
+    //                     return self.p.fail_at_position(DecodeError::IntCanonicTooWide, start);
+    //                 }
+    //                 return Ok(n);
+    //             } else if b == 0b1_011_1100 {
+    //                 let start = self.p.position();
+    //                 self.p.advance_or(1, DecodeError::CompactIntShort(1))?;
+    //                 let n = i8::from_be_bytes(self.p.slice(start..start + 1).try_into().unwrap()) as i64;
+    //                 if self.enc == Encoding::Canonic && 0 <= n && n <= 11 {
+    //                     return self.p.fail_at_position(DecodeError::IntCanonicTooWide, start);
+    //                 }
+    //                 return Ok(n);
+    //             } else {
+    //                 return Ok((u8::from_be_bytes([b & 0b0_000_1111])) as i64);
     //             }
-    //             _ => false,
-    //         };
-    //
-    //         if is_float {
-    //             // if is_float {
-    //             //     let (i, _) = try_parse!(i, take_while1!(|c: char| c.is_ascii_digit()));
-    //             //     let (i, _) = try_parse!(i, opt!(do_parse!(
-    //             //         one_of!("eE") >>
-    //             //         opt!(one_of!("+-")) >>
-    //             //         take_while1!(|c: char| c.is_ascii_digit()) >>
-    //             //         (())
-    //             //     )));
-    //             //     let end = i;
-    //             //
-    //             //     let raw = &start[..start.len() - end.len()];
-    //             //     let f = strtod(raw).unwrap();
-    //             //     if f.is_finite() {
-    //             //         return Ok((i, Value::float(f)));
-    //             //     } else {
-    //             //         return Err(Err::Failure(Context::Code(i, ErrorKind::Custom(2))));
-    //             //     }
-    //             // }
-    //             self.ws();
-    //             unimplemented!();
-    //         } else {
-    //             let end = start.len() - self.position.len();
-    //             self.ws();
-    //             match i64::from_str_radix(&start[..end], 10) {
-    //                 Ok(n) => return Ok(Expression::Int(n)),
-    //                 Err(_) => return self.err(ParseError::DecIntOutOfBounds),
-    //             }
     //         }
+    //         _ => self.p.fail_at_position(DecodeError::ExpectedInt, self.p.position() - 1),
     //     }
     // }
 
-    // fn parse_number_except(
-    //     &mut self,
-    //     pred: fn(f64) -> bool,
-    //     err: ErrorCode,
-    // ) -> Result<f64, DecodeJsonError> {
-    //     let pos = self.position();
-    //     let f = self.parse_number()?;
-    //     if pred(f) {
-    //         Ok(f)
-    //     } else {
-    //         self.fail_at_position(err, pos)
-    //     }
-    // }
+    fn parse_array(&mut self) -> Result<i64, Error> {
+        match self.p.peek()? {
+            b if b & 0b1_111_0000 == 0b1_011_0000 => self.parse_int_compact(),
+            b if b == ('+' as u8) || b == ('-' as u8) || is_digit(b) => self.parse_int_human(),
+            _ => self.p.fail(DecodeError::ExpectedInt)?,
+        }
+    }
 
-    // fn parse_number(&mut self) -> Result<f64, DecodeJsonError> {
-    //     let start = self.position();
-    //
-    //     // trailing `-`
-    //     match self.peek() {
-    //         Ok(0x2D) => self.advance(1),
-    //         Ok(_) => {}
-    //         Err(_) => return self.fail(ErrorCode::ExpectedNumber),
-    //     }
-    //
-    //     let next = self.next()?;
-    //     match next {
-    //         // first digit `0` must be followed by `.`
-    //         0x30 => {}
-    //         // first digit nonzero, may be followed by more digits until the `.`
-    //         0x31..=0x39 => self.skip(is_digit),
-    //         _ => return self.fail_at_position(ErrorCode::ExpectedNumber, start),
-    //     }
-    //
-    //     // `.`, followed by many1 digits
-    //     if let Some(0x2E) = self.peek_or_end() {
-    //         self.advance(1);
-    //         self.expect_pred(is_digit, ErrorCode::Digit)?;
-    //         self.skip(is_digit);
-    //     }
-    //
-    //     // `e` or `E`, followed by an optional sign and many1 digits
-    //     match self.peek_or_end() {
-    //         Some(0x45) | Some(0x65) => {
-    //             self.advance(1);
-    //
-    //             // optional `+` or `-`
-    //             if self.peek()? == 0x2B || self.peek()? == 0x2D {
-    //                 self.advance(1);
-    //             }
-    //
-    //             // many1 digits
-    //             self.expect_pred(is_digit, ErrorCode::Digit)?;
-    //             self.skip(is_digit);
-    //         }
-    //         _ => {}
-    //     }
-    //
-    //     // done parsing the number, convert it to a rust value
-    //     let f =
-    //         strtod(unsafe { std::str::from_utf8_unchecked(self.slice(start..self.position())) })
-    //             .unwrap(); // We already checked that the input is a valid number
-    //
-    //     Ok(f)
-    // }
-    //
-    // // Return a slice beginning and ending with 0x22 (`"`)
-    // fn parse_naive_string(&mut self) -> Result<&'de [u8], DecodeJsonError> {
-    //     self.expect(0x22, ErrorCode::ExpectedString)?;
-    //     let start = self.position();
-    //
-    //     while self.next()? != 0x22 {
-    //         // noop
-    //     }
-    //
-    //     Ok(self.slice(start..self.position()))
-    // }
 
     // fn parse_string(&mut self) -> Result<String, DecodeJsonError> {
     //     self.expect(0x22, ErrorCode::ExpectedString)?;
@@ -652,11 +725,17 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
 
             b if b & 0b1_111_0000 == 0b1_011_0000 => visitor.visit_i64(self.parse_int_compact()?),
             b if b == ('+' as u8) || b == ('-' as u8) || is_digit(b) => {
-                match self.parse_number()? {
+                match self.parse_number_human()? {
                     Number::I(n) => visitor.visit_i64(n),
                     Number::F(n) => visitor.visit_f64(n),
                 }
             }
+            0x49 | 0x4e => visitor.visit_f64(self.parse_float_human()?),
+            0b1_010_1111 => visitor.visit_f64(self.parse_float_compact()?),
+
+            0x5b => self.deserialize_seq(visitor),
+            b if b & 0b1_111_0000 == 0b1_101_0000 => self.deserialize_seq(visitor),
+
             _ => self.p.fail(DecodeError::Syntax),
         }
     }
@@ -778,16 +857,14 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // visitor.visit_f32(self.parse_number()? as f32)
+        visitor.visit_f64(self.parse_float()?)
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // visitor.visit_f64(self.parse_number()?)
+        visitor.visit_f64(self.parse_float()?)
     }
 
     fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -899,19 +976,62 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // self.expect(0x5B, ErrorCode::ExpectedArray)?;
-        // let value = visitor.visit_seq(CollectionAccessor::new(&mut self))?;
-        // self.expect_ws(0x5D, ErrorCode::Syntax)?; // Can't fail
-        // Ok(value)
+        match self.p.next()? {
+            0x5b => {
+                self.human(0)?;
+                return visitor.visit_seq(CollectionAccessor::new(&mut self, 0, false));
+            }
+            b if b & 0b1_111_0000 == 0b1_101_0000 => {
+                let len = if b == 0b1_101_1111 {
+                    let start = self.p.position();
+                    self.p.advance_or(8, DecodeError::CompactArrayShort(8))?;
+                    let n = u64::from_be_bytes(self.p.slice(start..start + 8).try_into().unwrap());
+                    if self.enc == Encoding::Canonic && n <= (u32::MAX as u64) {
+                        return self.p.fail_at_position(DecodeError::ArrayCanonicTooWide, start);
+                    }
+                    if n > (i64::MAX as u64) {
+                        return self.p.fail(DecodeError::ArrayTooLong);
+                    }
+                    n
+                } else if b == 0b1_101_1110 {
+                    let start = self.p.position();
+                    self.p.advance_or(4, DecodeError::CompactArrayShort(4))?;
+                    let n = u32::from_be_bytes(self.p.slice(start..start + 4).try_into().unwrap()) as u64;
+                    if self.enc == Encoding::Canonic && n <= (u16::MAX as u64) {
+                        return self.p.fail_at_position(DecodeError::ArrayCanonicTooWide, start);
+                    }
+                    n
+                } else if b == 0b1_101_1101 {
+                    let start = self.p.position();
+                    self.p.advance_or(2, DecodeError::CompactArrayShort(2))?;
+                    let n = u16::from_be_bytes(self.p.slice(start..start + 2).try_into().unwrap()) as u64;
+                    if self.enc == Encoding::Canonic && n <= (u8::MAX as u64) {
+                        return self.p.fail_at_position(DecodeError::ArrayCanonicTooWide, start);
+                    }
+                    n
+                } else if b == 0b1_101_1100 {
+                    let start = self.p.position();
+                    self.p.advance_or(1, DecodeError::CompactArrayShort(1))?;
+                    let n = u8::from_be_bytes(self.p.slice(start..start + 1).try_into().unwrap()) as u64;
+                    if self.enc == Encoding::Canonic && n <= 11 {
+                        return self.p.fail_at_position(DecodeError::ArrayCanonicTooWide, start);
+                    }
+                    n
+                } else {
+                    u8::from_be_bytes([b & 0b0_000_1111]) as u64
+                };
+
+                return visitor.visit_seq(CollectionAccessor::new(&mut self, len as usize, true));
+            }
+            _ => return self.p.fail_at_position(DecodeError::ExpectedArray, self.p.position() - 1),
+        }
     }
 
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // self.deserialize_seq(visitor)
+        self.deserialize_seq(visitor)
     }
 
     fn deserialize_tuple_struct<V>(
@@ -994,12 +1114,14 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
 
 struct CollectionAccessor<'a, 'de> {
     des: &'a mut VVDeserializer<'de>,
-    first: bool,
+    len: usize,
+    read: usize,
+    compact: bool,
 }
 
 impl<'a, 'de> CollectionAccessor<'a, 'de> {
-    fn new(des: &'a mut VVDeserializer<'de>) -> CollectionAccessor<'a, 'de> {
-        CollectionAccessor { des, first: true }
+    fn new(des: &'a mut VVDeserializer<'de>, len: usize, compact: bool) -> CollectionAccessor<'a, 'de> {
+        CollectionAccessor { des, len, read: 0, compact }
     }
 }
 
@@ -1010,22 +1132,34 @@ impl<'a, 'de> SeqAccess<'de> for CollectionAccessor<'a, 'de> {
     where
         T: DeserializeSeed<'de>,
     {
-        unimplemented!();
-        // // Array ends at `]`
-        // if let 0x5D = self.des.peek_ws()? {
-        //     return Ok(None);
-        // }
-        //
-        // // expect `,` before every item except the first
-        // if self.first {
-        //     self.first = false;
-        // } else {
-        //     self.des.expect_ws(0x2C, ErrorCode::Comma)?;
-        // }
-        //
-        // self.des.peek_ws()?;
-        //
-        // seed.deserialize(&mut *self.des).map(Some)
+        if self.compact {
+            if self.read < self.len {
+                let inner = seed.deserialize(&mut *self.des)?;
+                self.read += 1;
+                return Ok(Some(inner));
+            } else {
+                return Ok(None);
+            }
+        } else {
+            if let 0x5d = self.des.peek_spaces()? {
+                self.des.p.advance(1);
+                return Ok(None);
+            } else {
+                if self.read > 0 {
+                    self.des.p.expect(',' as u8, DecodeError::Comma)?;
+                }
+
+                if let 0x5d = self.des.peek_spaces()? {
+                    self.des.p.advance(1);
+                    return Ok(None);
+                }
+
+                // self.des.spaces()?;
+                let inner = seed.deserialize(&mut *self.des)?;
+                self.read += 1;
+                return Ok(Some(inner));
+            }
+        }
     }
 }
 

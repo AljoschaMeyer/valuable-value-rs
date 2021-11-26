@@ -182,21 +182,6 @@ impl<'a> ParserHelper<'a> {
         }
     }
 
-    pub fn skip_ws(&mut self) {
-        self.skip(is_ws)
-    }
-
-    // Consumes as much whitespace as possible, then peeks at the next non-whitespace byte.
-    pub fn peek_ws<E>(&mut self) -> Result<u8, Error<E>> {
-        self.skip_ws();
-        self.peek()
-    }
-
-    pub fn expect_ws<E>(&mut self, exp: u8, err: E) -> Result<(), Error<E>> {
-        self.skip_ws();
-        self.expect(exp, err)
-    }
-
     pub fn expect_bytes<E>(&mut self, exp: &[u8], err: E) -> Result<(), Error<E>> {
         if self.rest().starts_with(exp) {
             self.advance(exp.len());

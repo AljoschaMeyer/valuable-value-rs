@@ -3,6 +3,7 @@ use core::cmp::max;
 use std::collections::{BTreeMap, BTreeSet};
 
 use arbitrary::{Arbitrary, Unstructured};
+use pretty_dtoa::{dtoa, FmtFloatConfig};
 
 use crate::value::Value;
 
@@ -12,6 +13,8 @@ pub enum TestValue {
     Nil(Spaces, Nil),
     Bool(Spaces, Bool),
     Int(Spaces, Int),
+    Float(Spaces, Float),
+    Array(Spaces, Array),
 }
 
 impl TestValue {
@@ -20,6 +23,8 @@ impl TestValue {
             TestValue::Nil(s, v) => s.canonic() && v.canonic(),
             TestValue::Bool(s, v) => s.canonic() && v.canonic(),
             TestValue::Int(s, v) => s.canonic() && v.canonic(),
+            TestValue::Float(s, v) => s.canonic() && v.canonic(),
+            TestValue::Array(s, v) => s.canonic() && v.canonic(),
         }
     }
 
@@ -28,6 +33,8 @@ impl TestValue {
             TestValue::Nil(s, v) => s.human() && v.human(),
             TestValue::Bool(s, v) => s.human() && v.human(),
             TestValue::Int(s, v) => s.human() && v.human(),
+            TestValue::Float(s, v) => s.human() && v.human(),
+            TestValue::Array(s, v) => s.human() && v.human(),
         }
     }
 
@@ -36,6 +43,8 @@ impl TestValue {
             TestValue::Nil(s, v) => s.compact() && v.compact(),
             TestValue::Bool(s, v) => s.compact() && v.compact(),
             TestValue::Int(s, v) => s.compact() && v.compact(),
+            TestValue::Float(s, v) => s.compact() && v.compact(),
+            TestValue::Array(s, v) => s.compact() && v.compact(),
         }
     }
 
@@ -44,6 +53,8 @@ impl TestValue {
             TestValue::Nil(_, v) => v.to_value(),
             TestValue::Bool(_, v) => v.to_value(),
             TestValue::Int(_, v) => v.to_value(),
+            TestValue::Float(_, v) => v.to_value(),
+            TestValue::Array(_, v) => v.to_value(),
         }
     }
 
@@ -58,6 +69,14 @@ impl TestValue {
                 v.encode(out);
             }
             TestValue::Int(s, v) => {
+                s.encode(out);
+                v.encode(out);
+            }
+            TestValue::Float(s, v) => {
+                s.encode(out);
+                v.encode(out);
+            }
+            TestValue::Array(s, v) => {
                 s.encode(out);
                 v.encode(out);
             }
@@ -406,6 +425,185 @@ impl Int {
                     out.extend_from_slice(&(*n as i64).to_be_bytes());
                 } else {
                     unreachable!();
+                }
+            }
+        }
+    }
+}
+
+#[derive(Arbitrary, Debug)]
+pub enum Float {
+    Human(f64),
+    Compact(f64),
+}
+
+impl Float {
+    pub fn canonic(&self) -> bool {
+        match self {
+            Float::Human(_) => false,
+            Float::Compact(_) => true,
+        }
+    }
+
+    pub fn human(&self) -> bool {
+        match self {
+            Float::Human(_) => true,
+            Float::Compact(_) => false,
+        }
+    }
+
+    pub fn compact(&self) -> bool {
+        match self {
+            Float::Human(_) => false,
+            Float::Compact(_) => true,
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            Float::Human(b) => Value::Float(*b),
+            Float::Compact(b) => Value::Float(*b),
+        }
+    }
+
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Float::Human(v) => {
+                if v.is_nan() {
+                    out.extend_from_slice(b"NaN");
+                } else if *v == f64::INFINITY {
+                    out.extend_from_slice(b"Inf");
+                } else if *v == f64::NEG_INFINITY {
+                    out.extend_from_slice(b"-Inf");
+                } else {
+                    let config = FmtFloatConfig::default().add_point_zero(true);
+                    out.extend_from_slice(dtoa(*v, config).as_bytes());
+                }
+            }
+            Float::Compact(v) => {
+                out.push(0b1_010_1111);
+                out.extend_from_slice(&v.to_bits().to_be_bytes());
+            }
+        }
+    }
+}
+
+#[derive(Arbitrary, Debug)]
+pub enum Array {
+    HumanArray(Vec<(Spaces, TestValue)>, bool, Spaces),
+    CompactArray(Vec<TestValue>, u8),
+}
+
+impl Array {
+    pub fn canonic(&self) -> bool {
+        match self {
+            Array::HumanArray(..) => false,
+            Array::CompactArray(vs, bytes) => {
+                let correct_width = if vs.len() <= 11 {
+                    *bytes <= 0
+                } else if vs.len() <= (u8::MAX as usize) {
+                    *bytes <= 1
+                } else if vs.len() <= (u16::MAX as usize) {
+                    *bytes <= 2
+                } else if vs.len() <= (u16::MAX as usize) {
+                    *bytes <= 4
+                } else {
+                    true
+                };
+
+                return correct_width && vs.iter().all(|v| v.canonic());
+            }
+        }
+    }
+
+    pub fn human(&self) -> bool {
+        match self {
+            Array::HumanArray(vs, ..) => vs.iter().all(|(_, v)| v.human()),
+            Array::CompactArray(..) => false,
+        }
+    }
+
+    pub fn compact(&self) -> bool {
+        match self {
+            Array::HumanArray(..) => false,
+            Array::CompactArray(vs, ..) => vs.iter().all(|v| v.compact()),
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            Array::HumanArray(vs, _, _) => {
+                let mut arr = Vec::with_capacity(vs.len());
+                for (_, v) in vs {
+                    arr.push(v.to_value());
+                }
+                Value::Array(arr)
+            }
+            Array::CompactArray(vs, _) => {
+                let mut arr = Vec::with_capacity(vs.len());
+                for v in vs {
+                    arr.push(v.to_value());
+                }
+                Value::Array(arr)
+            }
+        }
+    }
+
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Array::HumanArray(vs, trailing_comma, trailing_spaces) => {
+                out.push('[' as u8);
+                for (i, (s, v)) in vs.iter().enumerate() {
+                    s.encode(out);
+                    v.encode(out);
+                    if i + 1 < vs.len() || *trailing_comma {
+                        out.push(',' as u8);
+                    }
+                }
+                trailing_spaces.encode(out);
+                out.push(']' as u8);
+            }
+            Array::CompactArray(vs, mut bytes) => {
+                if vs.len() <= 11 {
+                    bytes = max(0, bytes);
+                } else if vs.len() <= u8::MAX as usize {
+                    bytes = max(1, bytes);
+                } else if vs.len() <= u16::MAX as usize {
+                    bytes = max(2, bytes);
+                } else if vs.len() <= u32::MAX as usize {
+                    bytes = max(4, bytes);
+                } else {
+                    bytes = max(8, bytes);
+                }
+
+                if bytes == 3 {
+                    bytes = 2;
+                } else if bytes >= 5 && bytes <= 7 {
+                    bytes = 4
+                } else if bytes > 8 {
+                    bytes = 8;
+                }
+
+                if bytes == 0 {
+                    out.push(0b1_101_0000 ^ (vs.len() as u8));
+                } else if bytes == 1 {
+                    out.push(0b1_101_1100);
+                    out.extend_from_slice(&(vs.len() as u8).to_be_bytes());
+                } else if bytes == 2 {
+                    out.push(0b1_101_1101);
+                    out.extend_from_slice(&(vs.len() as u16).to_be_bytes());
+                } else if bytes == 4 {
+                    out.push(0b1_101_1110);
+                    out.extend_from_slice(&(vs.len() as u32).to_be_bytes());
+                } else if bytes == 8 {
+                    out.push(0b1_101_1111);
+                    out.extend_from_slice(&(vs.len() as u64).to_be_bytes());
+                } else {
+                    unreachable!();
+                }
+
+                for v in vs {
+                    v.encode(out);
                 }
             }
         }
