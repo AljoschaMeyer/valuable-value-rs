@@ -1,20 +1,16 @@
-use std::convert::TryInto;
-use std::slice::SliceIndex;
-use std::ops::{AddAssign, MulAssign, Neg};
-use std::fmt;
-use std::str::FromStr;
-
-use strtod2::strtod;
-use thiserror::Error;
-
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use core::marker::PhantomData;
+use std::convert::TryInto;
+use std::fmt;
+
+use thiserror::Error;
+use atm_parser_helper::{ParserHelper, Eoi, Error as ParseError};
+
 use serde::de::{
-    self, DeserializeSeed, EnumAccess, IntoDeserializer, MapAccess, SeqAccess,
-    VariantAccess, Visitor,
+    self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor,
 };
 
-use atm_parser_helper::{ParserHelper, Eoi, Error as ParseError};
+use crate::always_nil::AlwaysNil;
 
 /// Everything that can go wrong during deserialization of a valuable value from the compact
 /// encoding.
@@ -69,6 +65,9 @@ pub enum DecodeError {
     #[error("rust strings must be utf8, the input string was not")]
     Utf8,
 
+    #[error("can only decode a set where a map whose values are all nil would be valid")]
+    InvalidSet,
+
     #[error("expected nil")]
     ExpectedNil,
     #[error("expected bool")]
@@ -77,6 +76,8 @@ pub enum DecodeError {
     ExpectedFloat,
     #[error("expected int")]
     ExpectedInt,
+    #[error("expected option")]
+    ExpectedOption,
     #[error("expected byte string")]
     ExpectedString,
     #[error("expected byte string")]
@@ -85,6 +86,10 @@ pub enum DecodeError {
     ExpectedArray,
     #[error("expected map")]
     ExpectedMap,
+    #[error("expected `{0}` enum value")]
+    ExpectedEnum(String),
+    #[error("expected enum variant (either a string or a singleton map)")]
+    ExpectedEnumVariant,
 }
 
 impl Eoi for DecodeError {
@@ -445,10 +450,18 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let bytes = self.parse_bytes()?;
-        match std::str::from_utf8(bytes) {
-            Ok(s) => visitor.visit_string(s.to_string()),
-            Err(_) => self.p.fail(DecodeError::Utf8),
+        if (self.p.peek()? & 0b111_00000) == 0b101_00000 {
+            let v = Vec::deserialize(&mut *self)?;
+            match String::from_utf8(v) {
+                Ok(s) => visitor.visit_string(s),
+                Err(_) => self.p.fail(DecodeError::Utf8),
+            }
+        } else {
+            let bytes = self.parse_bytes()?;
+            match std::str::from_utf8(bytes) {
+                Ok(s) => visitor.visit_string(s.to_string()),
+                Err(_) => self.p.fail(DecodeError::Utf8),
+            }
         }
     }
 
@@ -463,15 +476,26 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let bytes = self.parse_bytes()?;
-        return visitor.visit_byte_buf(bytes.to_owned());
+        if (self.p.peek()? & 0b111_00000) == 0b101_00000 {
+            let v = Vec::deserialize(self)?;
+            return visitor.visit_byte_buf(v);
+        } else {
+            let bytes = self.parse_bytes()?;
+            return visitor.visit_byte_buf(bytes.to_owned());
+        }
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        self.deserialize_enum("Option", &["Some", "None"], visitor)
+        if self.p.advance_over(&[0b100_00100, 'N' as u8, 'o' as u8, 'n' as u8, 'e' as u8]) {
+            return visitor.visit_none();
+        } else if self.p.advance_over(&[0b111_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8]) {
+            return visitor.visit_some(self);
+        } else {
+            return self.p.fail(DecodeError::ExpectedOption);
+        }
     }
 
     fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -565,26 +589,17 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
 
     fn deserialize_enum<V>(
         self,
-        _name: &'static str,
+        name: &'static str,
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // let pos = self.position();
-        // if self.peek()? == 0x22 {
-        //     // Visit a unit variant.
-        //     visitor.visit_enum(self.parse_string()?.into_deserializer())
-        // } else if self.next()? == 0x7B {
-        //     // Visit a newtype variant, tuple variant, or struct variant.
-        //     let value = visitor.visit_enum(Enum::new(self))?;
-        //     self.expect_ws(0x7D, ErrorCode::Syntax)?; // Can't fail
-        //     Ok(value)
-        // } else {
-        //     self.fail_at_position(ErrorCode::ExpectedEnum, pos)
-        // }
+        match self.p.peek()? & 0b111_00000 {
+            0b100_00000 | 0b110_00000 | 0b111_00000 => Ok(visitor.visit_enum(Enum::new(self))?),
+            _ => self.p.fail(DecodeError::ExpectedEnum(name.to_string()))
+        }
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -598,8 +613,11 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // self.deserialize_any(visitor)
+        self.deserialize_any(visitor)
+    }
+
+    fn is_human_readable(&self) -> bool {
+        false
     }
 }
 
@@ -652,42 +670,39 @@ impl<'a, 'de> MapAccess<'de> for MapAccessor<'a, 'de> {
     where
         K: DeserializeSeed<'de>,
     {
-        unimplemented!();
-        // // Object ends at `}`
-        // if let 0x7D = self.des.peek_ws()? {
-        //     return Ok(None);
-        // }
-        //
-        // // expect `,` before every item except the first
-        // if self.first {
-        //     self.first = false;
-        // } else {
-        //     self.des.expect_ws(0x2C, ErrorCode::Comma)?;
-        // }
-        //
-        // self.des.peek_ws()?;
-        // seed.deserialize(&mut *self.des).map(Some)
+        if self.read < self.len {
+            let inner = seed.deserialize(&mut *self.des)?;
+            return Ok(Some(inner));
+        } else {
+            return Ok(None);
+        }
     }
 
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
     where
         V: DeserializeSeed<'de>,
     {
-        unimplemented!();
-        // self.des.expect_ws(0x3A, ErrorCode::Colon)?; // `:`
-        //
-        // self.des.peek_ws()?;
-        // seed.deserialize(&mut *self.des)
+        let value = if self.set {
+            match seed.deserialize(AlwaysNil::new()) {
+                Ok(nil) => nil,
+                Err(_) => return self.des.p.fail(DecodeError::InvalidSet),
+            }
+        } else {
+            seed.deserialize(&mut *self.des)?
+        };
+        self.read += 1;
+        return Ok(value);
     }
 }
 
 struct Enum<'a, 'de> {
     des: &'a mut VVDeserializer<'de>,
+    set: bool,
 }
 
 impl<'a, 'de> Enum<'a, 'de> {
     fn new(des: &'a mut VVDeserializer<'de>) -> Self {
-        Enum { des }
+        Enum { des, set: false }
     }
 }
 
@@ -695,17 +710,23 @@ impl<'a, 'de> EnumAccess<'de> for Enum<'a, 'de> {
     type Error = Error;
     type Variant = Self;
 
-    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    fn variant_seed<V>(mut self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
     where
         V: DeserializeSeed<'de>,
     {
-        unimplemented!();
-        // self.des.peek_ws()?;
-        // let val = seed.deserialize(&mut *self.des)?;
-        // self.des.expect_ws(0x3A, ErrorCode::Colon)?; // `:`
-        //
-        // self.des.peek_ws()?;
-        // Ok((val, self))
+        match self.des.p.peek()? {
+            b if b & 0b111_00000 == 0b100_00000 => Ok((seed.deserialize(&mut *self.des)?, self)),
+            0b110_00001 => {
+                self.set = true;
+                self.des.p.advance(1);
+                Ok((seed.deserialize(&mut *self.des)?, self))
+            }
+            0b111_00001 => {
+                self.des.p.advance(1);
+                Ok((seed.deserialize(&mut *self.des)?, self))
+            }
+            _ => self.des.p.fail(DecodeError::ExpectedEnumVariant),
+        }
     }
 }
 
@@ -713,29 +734,30 @@ impl<'a, 'de> VariantAccess<'de> for Enum<'a, 'de> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
-        unimplemented!();
-        // eprintln!("wtf is this");
-        // self.des.fail(ErrorCode::ExpectedString)
+        Ok(())
     }
 
     fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
     where
         T: DeserializeSeed<'de>,
     {
-        unimplemented!();
-        // seed.deserialize(self.des)
+        if self.set {
+            match seed.deserialize(AlwaysNil::new()) {
+                Ok(nil) => Ok(nil),
+                Err(_) => self.des.p.fail(DecodeError::InvalidSet),
+            }
+        } else {
+            seed.deserialize(self.des)
+        }
     }
 
     fn tuple_variant<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // de::Deserializer::deserialize_seq(self.des, visitor)
+        de::Deserializer::deserialize_seq(self.des, visitor)
     }
 
-    // Struct variants are represented in JSON as `{ NAME: { K: V, ... } }` so
-    // deserialize the inner map here.
     fn struct_variant<V>(
         self,
         _fields: &'static [&'static str],
@@ -744,7 +766,6 @@ impl<'a, 'de> VariantAccess<'de> for Enum<'a, 'de> {
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // de::Deserializer::deserialize_map(self.des, visitor)
+        de::Deserializer::deserialize_map(self.des, visitor)
     }
 }

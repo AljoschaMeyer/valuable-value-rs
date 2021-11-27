@@ -17,3 +17,4 @@ pub mod ser;
 
 pub mod value;
 pub mod compact;
+mod always_nil;
