@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use core::marker::PhantomData;
 use std::convert::TryInto;
 use std::fmt;
 
@@ -104,7 +103,7 @@ impl de::Error for DecodeError {
     }
 }
 
-type Error = ParseError<DecodeError>;
+pub type Error = ParseError<DecodeError>;
 
 /// The different ways of violating canonicity.
 #[derive(Error, Debug, PartialEq, Eq, Clone)]
@@ -164,7 +163,7 @@ impl<'de> VVDeserializer<'de> {
         self.p.advance_or(8, DecodeError::Eoi)?;
         let n = f64::from_bits(u64::from_be_bytes(self.p.slice(start..start + 8).try_into().unwrap()));
         if self.canonic {
-            if n.to_bits() != u64::MAX {
+            if n.is_nan() && (n.to_bits() != u64::MAX) {
                 return self.p.fail(DecodeError::Canonicity(CanonicityCondition::NaN));
             }
         }
@@ -202,7 +201,7 @@ impl<'de> VVDeserializer<'de> {
                     let start = self.p.position();
                     self.p.advance_or(1, DecodeError::Eoi)?;
                     let n = i8::from_be_bytes(self.p.slice(start..start + 1).try_into().unwrap()) as i64;
-                    if self.canonic && 0 <= n && n <= 11 {
+                    if self.canonic && 0 <= n && n <= 27 {
                         return self.p.fail_at_position(DecodeError::Canonicity(CanonicityCondition::IntTooWide), start);
                     }
                     return Ok(n);
@@ -262,7 +261,7 @@ impl<'de> VVDeserializer<'de> {
                     let start = self.p.position();
                     self.p.advance_or(1, DecodeError::Eoi)?;
                     let n = u8::from_be_bytes(self.p.slice(start..start + 1).try_into().unwrap()) as u64;
-                    if self.canonic && n <= 11 {
+                    if self.canonic && n <= 27 {
                         return self.p.fail_at_position(DecodeError::Canonicity(too_wide), start);
                     }
                     n
@@ -489,9 +488,9 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        if self.p.advance_over(&[0b100_00100, 'N' as u8, 'o' as u8, 'n' as u8, 'e' as u8]) {
+        if self.p.advance_over(&[0b100_00100, 'N' as u8, 'o' as u8, 'n' as u8, 'e' as u8]) || (self.canonic && self.p.advance_over(&[0b101_00100, 0b011_11100, 'N' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'n' as u8, 0b011_11100, 'e' as u8])) {
             return visitor.visit_none();
-        } else if self.p.advance_over(&[0b111_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8]) {
+        } else if self.p.advance_over(&[0b111_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8]) || (self.canonic && self.p.advance_over(&[0b111_00001, 0b101_00100, 0b011_11100, 'S' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'm' as u8, 0b011_11100, 'e' as u8])) {
             return visitor.visit_some(self);
         } else {
             return self.p.fail(DecodeError::ExpectedOption);
@@ -568,7 +567,7 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
                 return visitor.visit_map(MapAccessor::new(&mut self, count, true));
             }
             0b111_00000 => {
-                let count = self.parse_count(0b110_00000, DecodeError::ExpectedMap, CanonicityCondition::MapTooWide, DecodeError::OutOfBoundsMap)?;
+                let count = self.parse_count(0b111_00000, DecodeError::ExpectedMap, CanonicityCondition::MapTooWide, DecodeError::OutOfBoundsMap)?;
                 return visitor.visit_map(MapAccessor::new(&mut self, count, false));
             }
             _ => return self.p.fail(DecodeError::ExpectedMap),
@@ -598,6 +597,8 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     {
         match self.p.peek()? & 0b111_00000 {
             0b100_00000 | 0b110_00000 | 0b111_00000 => Ok(visitor.visit_enum(Enum::new(self))?),
+            0b101_00000 if self.canonic => Ok(visitor.visit_enum(Enum::new(self))?),
+            0b101_00000 if !self.canonic => Ok(visitor.visit_enum(Enum::new(self))?),
             _ => self.p.fail(DecodeError::ExpectedEnum(name.to_string()))
         }
     }
@@ -606,7 +607,11 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        self.deserialize_str(visitor)
+        if self.canonic {
+            self.deserialize_string(visitor)
+        } else {
+            self.deserialize_str(visitor)
+        }
     }
 
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -715,7 +720,7 @@ impl<'a, 'de> EnumAccess<'de> for Enum<'a, 'de> {
         V: DeserializeSeed<'de>,
     {
         match self.des.p.peek()? {
-            b if b & 0b111_00000 == 0b100_00000 => Ok((seed.deserialize(&mut *self.des)?, self)),
+            b if (b & 0b111_00000 == 0b100_00000) || (b & 0b111_00000 == 0b101_00000) => Ok((seed.deserialize(&mut *self.des)?, self)),
             0b110_00001 => {
                 self.set = true;
                 self.des.p.advance(1);
@@ -767,5 +772,26 @@ impl<'a, 'de> VariantAccess<'de> for Enum<'a, 'de> {
         V: Visitor<'de>,
     {
         de::Deserializer::deserialize_map(self.des, visitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn floats() {
+        let f = f64::deserialize(&mut VVDeserializer::new(&[0b010_00000, 0x80, 0, 0, 0, 0, 0, 0, 0], false)).unwrap();
+        assert_eq!(f, -0.0f64);
+        assert!(f.is_sign_negative());
+    }
+
+    #[test]
+    fn arrays() {
+        let mut d = VVDeserializer::new(&[0b101_11111, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0], false);
+        assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::OutOfBoundsArray);
+
+        let mut d = VVDeserializer::new(&[0b101_11111, 126, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0], false);
+        assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::Eoi);
     }
 }

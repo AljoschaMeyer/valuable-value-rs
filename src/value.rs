@@ -1,3 +1,5 @@
+use serde::de::MapAccess;
+use serde::ser::SerializeMap;
 use serde::ser::SerializeSeq;
 use core::cmp::{self, Ordering};
 use Ordering::*;
@@ -415,7 +417,13 @@ impl Serialize for Value {
                 }
                 s.end()
             }
-            _ => unimplemented!(),
+            Map(m) => {
+                let mut s = serializer.serialize_map(Some(m.len()))?;
+                for (k, v) in m {
+                    s.serialize_entry(k, v)?;
+                }
+                s.end()
+            }
         }
     }
 }
@@ -501,6 +509,16 @@ impl<'de> Visitor<'de> for ValueVisitor {
 
         return Ok(Array(v));
     }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut m = BTreeMap::new();
+
+        while let Some((k, v)) = map.next_entry()? {
+            m.insert(k, v);
+        }
+
+        return Ok(Map(m));
+    }
 }
 
 impl<'de> Deserialize<'de> for Value {
@@ -538,37 +556,20 @@ mod tests {
         assert!(Float(1.0) < Float(f64::INFINITY));
         assert!(Float(f64::INFINITY) < Float(f64::NAN));
 
-        assert!(Float(f64::NAN) < Int(-1));
-    }
+        assert!(Float(f64::NAN) < Int(i64::MIN));
 
-    use crate::de::*;
+        assert!(Int(i64::MAX) < Array(Vec::new()));
 
-    #[test]
-    fn floats() {
-        let mut hybrid = VVDeserializer::new(&[0b1_010_1111, 0x80, 0, 0, 0, 0, 0, 0, 0], Encoding::Hybrid);
-        assert_eq!(Float(-0.0), Value::deserialize(&mut hybrid).unwrap());
-
-        hybrid = VVDeserializer::new(b"00_6____.2_7E2_", Encoding::Hybrid);
-        assert_eq!(Float(6.27e2), Value::deserialize(&mut hybrid).unwrap());
-
-        assert_eq!(Value::deserialize(&mut VVDeserializer::new(b"0", Encoding::Hybrid)).unwrap(), Value::Int(0));
-        assert!(Value::deserialize(&mut VVDeserializer::new(b"0.", Encoding::Hybrid)).is_err());
-        assert!(Value::deserialize(&mut VVDeserializer::new(b".0", Encoding::Hybrid)).is_err());
-        assert!(Value::deserialize(&mut VVDeserializer::new(b"0.0E", Encoding::Hybrid)).is_err());
-        assert!(Value::deserialize(&mut VVDeserializer::new(b"_0.0", Encoding::Hybrid)).is_err());
-        assert!(Value::deserialize(&mut VVDeserializer::new(b"0._", Encoding::Hybrid)).is_err());
-    }
-
-    #[test]
-    fn arrays() {
-        let mut hybrid = VVDeserializer::new(&[0b1_101_1111, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0], Encoding::Hybrid);
-        let err = Value::deserialize(&mut hybrid).unwrap_err().reason;
-        match err {
-            crate::parser_helper::Reason::UnexpectedEndOfInput => panic!("decoding must fail if array length exceeds 2^63 - 1"),
-            crate::parser_helper::Reason::Other(e) => assert_eq!(crate::de::DecodeError::ArrayTooLong, e),
-        }
-
-        let mut hybrid = VVDeserializer::new(&[0b1_101_1111, 126, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0], Encoding::Hybrid);
-        assert!(Value::deserialize(&mut hybrid).is_err());
+        assert!(Array(Vec::new()) < Map(BTreeMap::new()));
     }
 }
+
+// hybrid = VVDeserializer::new(b"00_6____.2_7E2_", Encoding::Hybrid);
+// assert_eq!(Float(6.27e2), Value::deserialize(&mut hybrid).unwrap());
+//
+// assert_eq!(Value::deserialize(&mut VVDeserializer::new(b"0", Encoding::Hybrid)).unwrap(), Value::Int(0));
+// assert!(Value::deserialize(&mut VVDeserializer::new(b"0.", Encoding::Hybrid)).is_err());
+// assert!(Value::deserialize(&mut VVDeserializer::new(b".0", Encoding::Hybrid)).is_err());
+// assert!(Value::deserialize(&mut VVDeserializer::new(b"0.0E", Encoding::Hybrid)).is_err());
+// assert!(Value::deserialize(&mut VVDeserializer::new(b"_0.0", Encoding::Hybrid)).is_err());
+// assert!(Value::deserialize(&mut VVDeserializer::new(b"0._", Encoding::Hybrid)).is_err());

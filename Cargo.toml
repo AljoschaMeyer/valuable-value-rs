@@ -7,7 +7,7 @@ edition = "2018"
 default = ["arbitrary"]
 
 [dependencies]
-serde = "1.0.126"
+serde = {version = "1.0.126", features = ["derive"]}
 strtod2 = "0.0.1"
 thiserror = "1.0.30"
 # panda_pile = "0.2.0"

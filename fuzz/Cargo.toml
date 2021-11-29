@@ -11,6 +11,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde = "1.0.126"
+atm_parser_helper = "1.0.0"
 
 [dependencies.valuable_value]
 path = ".."
@@ -59,5 +60,35 @@ doc = false
 [[bin]]
 name = "equality"
 path = "fuzz_targets/equality.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "compact_canonicity"
+path = "fuzz_targets/compact/canonicity.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "compact_deserialize_any"
+path = "fuzz_targets/compact/deserialize_any.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "compact_deserialize_valid"
+path = "fuzz_targets/compact/deserialize_valid.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "compact_roundtrip"
+path = "fuzz_targets/compact/roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "compact_typed"
+path = "fuzz_targets/compact/typed.rs"
 test = false
 doc = false
