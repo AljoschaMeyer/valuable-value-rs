@@ -1,5 +1,5 @@
 [package]
-name = "valuable_valueTake-fuzz"
+name = "valuable_value-fuzz"
 version = "0.0.0"
 authors = ["Automatically generated"]
 publish = false
@@ -20,30 +20,6 @@ features = ["arbitrary"]
 # Prevent this from interfering with workspaces
 [workspace]
 members = ["."]
-
-[[bin]]
-name = "deserialize_valid"
-path = "fuzz_targets/deserialize_valid.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "deserialize_any"
-path = "fuzz_targets/deserialize_any.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "roundtrip"
-path = "fuzz_targets/roundtrip.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "canonicity"
-path = "fuzz_targets/canonicity.rs"
-test = false
-doc = false
 
 [[bin]]
 name = "partial_order"
@@ -90,5 +66,29 @@ doc = false
 [[bin]]
 name = "compact_typed"
 path = "fuzz_targets/compact/typed.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "human_deserialize_any"
+path = "fuzz_targets/human/deserialize_any.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "human_deserialize_valid"
+path = "fuzz_targets/human/deserialize_valid.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "human_roundtrip"
+path = "fuzz_targets/human/roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "human_typed"
+path = "fuzz_targets/human/typed.rs"
 test = false
 doc = false

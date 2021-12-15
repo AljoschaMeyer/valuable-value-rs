@@ -84,9 +84,9 @@ impl Ord for Value {
                 if n1.is_nan() && n2.is_nan() {
                     Equal
                 } else if n1.is_nan() {
-                    Greater
-                } else if n2.is_nan() {
                     Less
+                } else if n2.is_nan() {
+                    Greater
                 } else {
                     n1.total_cmp(n2)
                 }
@@ -298,9 +298,9 @@ impl Value {
                 if n1.is_nan() && n2.is_nan() {
                     Some(self.clone())
                 } else if n1.is_nan() {
-                    Some(other.clone())
-                } else if n2.is_nan() {
                     Some(self.clone())
+                } else if n2.is_nan() {
+                    Some(other.clone())
                 } else {
                     if n1.total_cmp(n2) == Greater {
                         Some(other.clone())
@@ -349,9 +349,9 @@ impl Value {
                 if n1.is_nan() && n2.is_nan() {
                     Some(self.clone())
                 } else if n1.is_nan() {
-                    Some(self.clone())
-                } else if n2.is_nan() {
                     Some(other.clone())
+                } else if n2.is_nan() {
+                    Some(self.clone())
                 } else {
                     if n1.total_cmp(n2) == Less {
                         Some(other.clone())
@@ -538,7 +538,7 @@ mod tests {
     fn eq() {
         assert!(Float(-0.0f64) != Float(0.0f64));
         let negative_nan = f64::from_bits(u64::MAX);
-        let positive_nan = negative_nan.copysign(-1.0);
+        let positive_nan = negative_nan.copysign(1.0);
         assert_eq!(Float(positive_nan), Float(negative_nan));
     }
 
@@ -549,12 +549,12 @@ mod tests {
         assert!(Bool(false) < Bool(true));
         assert!(Bool(true) < Float(f64::NEG_INFINITY));
 
+        assert!(Float(f64::NAN) < Float(f64::NEG_INFINITY));
         assert!(Float(f64::NEG_INFINITY) < Float(-1.0));
         assert!(Float(-1.0) < Float(-0.0));
         assert!(Float(-0.0) < Float(0.0));
         assert!(Float(0.0) < Float(1.0));
         assert!(Float(1.0) < Float(f64::INFINITY));
-        assert!(Float(f64::INFINITY) < Float(f64::NAN));
 
         assert!(Float(f64::NAN) < Int(i64::MIN));
 

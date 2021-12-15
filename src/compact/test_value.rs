@@ -16,6 +16,7 @@ pub enum TestValue {
     ByteString(ByteString),
     Array(Array),
     Set(Set),
+    Map(Map),
 }
 
 impl TestValue {
@@ -33,6 +34,7 @@ impl TestValue {
             TestValue::ByteString(v) => v.canonic(),
             TestValue::Array(v) => v.canonic(),
             TestValue::Set(v) => v.canonic(),
+            TestValue::Map(v) => v.canonic(),
         }
     }
 
@@ -45,6 +47,7 @@ impl TestValue {
             TestValue::ByteString(v) => v.to_value(),
             TestValue::Array(v) => v.to_value(),
             TestValue::Set(v) => v.to_value(),
+            TestValue::Map(v) => v.to_value(),
         }
     }
 
@@ -64,6 +67,7 @@ impl TestValue {
             TestValue::ByteString(v) => v.encode(out),
             TestValue::Array(v) => v.encode(out),
             TestValue::Set(v) => v.encode(out),
+            TestValue::Map(v) => v.encode(out),
         }
     }
 }
@@ -226,6 +230,10 @@ pub struct Map {
 
 impl Map {
     pub fn canonic(&self) -> bool {
+        if !canonic_width(self.elements.len(), self.count_width) {
+            return false;
+        }
+
         let mut previous = None;
         for (k, v) in self.elements.iter() {
             let kv = Some(k.to_value());
