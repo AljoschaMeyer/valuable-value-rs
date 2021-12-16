@@ -10,117 +10,117 @@ fuzz_target!(|data: &[u8]| {
     match <(Value, Value, Value)>::arbitrary(&mut Unstructured::new(data)) {
         Ok((v, w, x)) => {
             if v == w {
-                assert!(v.meaningful_le(&w));
+                assert!(v.subvalue(&w));
             }
 
-            if v.meaningful_le(&w) && w.meaningful_le(&v) {
+            if v.subvalue(&w) && w.subvalue(&v) {
                 assert_eq!(v, w);
             }
 
-            if v.meaningful_le(&w) && w.meaningful_le(&x) {
-                assert!(v.meaningful_le(&x));
+            if v.subvalue(&w) && w.subvalue(&x) {
+                assert!(v.subvalue(&x));
             }
 
-            match v.meaningful_partial_cmp(&w) {
+            match v.subvalue_cmp(&w) {
                 None => {
-                    assert!(!v.meaningful_lt(&w));
-                    assert!(!v.meaningful_le(&w));
-                    assert!(!v.meaningful_gt(&w));
-                    assert!(!v.meaningful_ge(&w));
+                    assert!(!v.strict_subvalue(&w));
+                    assert!(!v.subvalue(&w));
+                    assert!(!v.strict_supervalue(&w));
+                    assert!(!v.supervalue(&w));
                     assert!(!v.eq(&w));
 
-                    match v.greatest_lower_bound(&w) {
+                    match v.greatest_common_subvalue(&w) {
                         Some(glb) => assert!(glb != v && glb != w),
                         None => {}
                     }
-                    match v.least_upper_bound(&w) {
+                    match v.least_common_supervalue(&w) {
                         Some(lub) => assert!(lub != v && lub != w),
                         None => {}
                     }
                 }
 
                 Some(Less) => {
-                    assert!(v.meaningful_lt(&w));
-                    assert!(v.meaningful_le(&w));
-                    assert!(!v.meaningful_gt(&w));
-                    assert!(!v.meaningful_ge(&w));
+                    assert!(v.strict_subvalue(&w));
+                    assert!(v.subvalue(&w));
+                    assert!(!v.strict_supervalue(&w));
+                    assert!(!v.supervalue(&w));
                     assert!(!v.eq(&w));
-                    test(v < w, &v, &w, "v.meaningful_lt(w) should imply v < w");
+                    test(v < w, &v, &w, "v.strict_subvalue(w) should imply v < w");
 
-                    match v.greatest_lower_bound(&w) {
+                    match v.greatest_common_subvalue(&w) {
                         Some(glb) => assert!(glb == v || glb == w),
                         None => {
-                            println!("{:?} and {:?} must have a greatest_lower_bound", v, w);
+                            println!("{:?} and {:?} must have a greatest_common_subvalue", v, w);
                             panic!();
                         }
                     }
-                    match v.least_upper_bound(&w) {
+                    match v.least_common_supervalue(&w) {
                         Some(glb) => assert!(glb == v || glb == w),
                         None => {
-                            println!("{:?} and {:?} must have a least_upper_bound", v, w);
+                            println!("{:?} and {:?} must have a least_common_supervalue", v, w);
                             panic!();
                         }
                     }
                 }
 
                 Some(Equal) => {
-                    assert!(!v.meaningful_lt(&w));
-                    assert!(v.meaningful_le(&w));
-                    assert!(!v.meaningful_gt(&w));
-                    assert!(v.meaningful_ge(&w));
+                    assert!(!v.strict_subvalue(&w));
+                    assert!(v.subvalue(&w));
+                    assert!(!v.strict_supervalue(&w));
+                    assert!(v.supervalue(&w));
                     assert!(v.eq(&w));
 
-                    match v.greatest_lower_bound(&w) {
+                    match v.greatest_common_subvalue(&w) {
                         Some(glb) => assert!(glb == v && glb == w),
                         None => {
-                            println!("{:?} and {:?} must have a greatest_lower_bound", v, w);
+                            println!("{:?} and {:?} must have a greatest_common_subvalue", v, w);
                             panic!();
                         }
                     }
-                    match v.least_upper_bound(&w) {
+                    match v.least_common_supervalue(&w) {
                         Some(glb) => assert!(glb == v && glb == w),
                         None => {
-                            println!("{:?} and {:?} must have a least_upper_bound", v, w);
+                            println!("{:?} and {:?} must have a least_common_supervalue", v, w);
                             panic!();
                         }
                     }
                 }
 
                 Some(Greater) => {
-                    assert!(!v.meaningful_lt(&w));
-                    assert!(!v.meaningful_le(&w));
-                    assert!(v.meaningful_gt(&w));
-                    assert!(v.meaningful_ge(&w));
+                    assert!(!v.strict_subvalue(&w));
+                    assert!(!v.subvalue(&w));
+                    assert!(v.strict_supervalue(&w));
+                    assert!(v.supervalue(&w));
                     assert!(!v.eq(&w));
-                    test(v > w, &v, &w, "v.meaningful_gt(w) should imply v > w");
+                    test(v > w, &v, &w, "v.strict_supervalue(w) should imply v > w");
 
-                    match v.greatest_lower_bound(&w) {
+                    match v.greatest_common_subvalue(&w) {
                         Some(glb) => assert!(glb == v || glb == w),
                         None => {
-                            println!("{:?} and {:?} must have a greatest_lower_bound", v, w);
+                            println!("{:?} and {:?} must have a greatest_common_subvalue", v, w);
                             panic!();
                         }
                     }
-                    match v.least_upper_bound(&w) {
+                    match v.least_common_supervalue(&w) {
                         Some(glb) => assert!(glb == v || glb == w),
                         None => {
-                            println!("{:?} and {:?} must have a least_upper_bound", v, w);
+                            println!("{:?} and {:?} must have a least_common_supervalue", v, w);
                             panic!();
                         }
                     }
                 }
             }
 
-            if let Some(glb) = v.greatest_lower_bound(&w) {
-                assert!(v.meaningful_ge(&glb));
-                assert!(w.meaningful_ge(&glb));
-                assert_eq!(w.greatest_lower_bound(&v).unwrap(), glb);
+            if let Some(glb) = v.greatest_common_subvalue(&w) {
+                assert!(v.supervalue(&glb));
+                assert!(w.supervalue(&glb));
+                assert_eq!(w.greatest_common_subvalue(&v).unwrap(), glb);
             }
 
-            if let Some(lub) = v.least_upper_bound(&w) {
-                assert!(v.meaningful_le(&lub));
-                assert!(w.meaningful_le(&lub));
-                assert_eq!(w.least_upper_bound(&v).unwrap(), lub);
+            if let Some(lub) = v.least_common_supervalue(&w) {
+                assert!(v.subvalue(&lub));
+                assert!(w.subvalue(&lub));
+                assert_eq!(w.least_common_supervalue(&v).unwrap(), lub);
             }
         }
         _ => {}

@@ -132,7 +132,7 @@ impl Ord for Value {
 
 impl Value {
     /// Implements the [meaningful partial order](https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order) on the valuable values.
-    pub fn meaningful_partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    pub fn subvalue_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => Some(self.cmp(other)),
             (Array(v1), Array(v2)) => {
@@ -140,12 +140,12 @@ impl Value {
                 let mut so_far = Equal;
                 loop {
                     match (v1.get(i), v2.get(i), so_far) {
-                        (Some(i1), Some(i2), Equal) => so_far = i1.meaningful_partial_cmp(i2)?,
+                        (Some(i1), Some(i2), Equal) => so_far = i1.subvalue_cmp(i2)?,
                         (Some(i1), Some(i2), Less) => {
-                            if let Greater = i1.meaningful_partial_cmp(i2)? { return None; }
+                            if let Greater = i1.subvalue_cmp(i2)? { return None; }
                         }
                         (Some(i1), Some(i2), Greater) => {
-                            if let Less = i1.meaningful_partial_cmp(i2)? { return None; }
+                            if let Less = i1.subvalue_cmp(i2)? { return None; }
                         }
 
                         (Some(_), None, Equal | Greater) => return Some(Greater),
@@ -181,7 +181,7 @@ impl Value {
                                     e2 = es2.next();
                                 }
                                 Equal => {
-                                    so_far = v1.meaningful_partial_cmp(v2)?;
+                                    so_far = v1.subvalue_cmp(v2)?;
                                     e1 = es1.next();
                                     e2 = es2.next();
                                 }
@@ -192,7 +192,7 @@ impl Value {
                                 Less => return None,
                                 Greater => e2 = es2.next(),
                                 Equal => {
-                                    match v1.meaningful_partial_cmp(v2)? {
+                                    match v1.subvalue_cmp(v2)? {
                                         Greater => return None,
                                         Less | Equal => {
                                             e1 = es1.next();
@@ -207,7 +207,7 @@ impl Value {
                                 Less => e1 = es1.next(),
                                 Greater => return None,
                                 Equal => {
-                                    match v1.meaningful_partial_cmp(v2)? {
+                                    match v1.subvalue_cmp(v2)? {
                                         Less => return None,
                                         Equal | Greater => {
                                             e1 = es1.next();
@@ -233,11 +233,11 @@ impl Value {
     }
 
     /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
-    pub fn meaningful_lt(&self, other: &Self) -> bool {
+    pub fn strict_subvalue(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => self.lt(other),
             (Array(_), Array(_)) | (Map(_), Map(_)) => {
-                match self.meaningful_partial_cmp(other) {
+                match self.subvalue_cmp(other) {
                     Some(Less) => true,
                     _ => false,
                 }
@@ -247,11 +247,11 @@ impl Value {
     }
 
     /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
-    pub fn meaningful_le(&self, other: &Self) -> bool {
+    pub fn subvalue(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => self.le(other),
             (Array(_), Array(_)) | (Map(_), Map(_)) => {
-                match self.meaningful_partial_cmp(other) {
+                match self.subvalue_cmp(other) {
                     Some(Less | Equal) => true,
                     _ => false,
                 }
@@ -261,11 +261,11 @@ impl Value {
     }
 
     /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
-    pub fn meaningful_gt(&self, other: &Self) -> bool {
+    pub fn strict_supervalue(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => self.gt(other),
             (Array(_), Array(_)) | (Map(_), Map(_)) => {
-                match self.meaningful_partial_cmp(other) {
+                match self.subvalue_cmp(other) {
                     Some(Greater) => true,
                     _ => false,
                 }
@@ -275,11 +275,11 @@ impl Value {
     }
 
     /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
-    pub fn meaningful_ge(&self, other: &Self) -> bool {
+    pub fn supervalue(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => self.ge(other),
             (Array(_), Array(_)) | (Map(_), Map(_)) => {
-                match self.meaningful_partial_cmp(other) {
+                match self.subvalue_cmp(other) {
                     Some(Greater | Equal) => true,
                     _ => false,
                 }
@@ -289,7 +289,7 @@ impl Value {
     }
 
     /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
-    pub fn greatest_lower_bound(&self, other: &Self) -> Option<Self> {
+    pub fn greatest_common_subvalue(&self, other: &Self) -> Option<Self> {
         match (self, other) {
             (Nil, Nil) => Some(Nil),
             (Bool(b1), Bool(b2)) => Some(Bool(*b1 && *b2)),
@@ -315,7 +315,7 @@ impl Value {
                 for i in 0..len {
                     match (v1.get(i), v2.get(i)) {
                         (Some(x1), Some(x2)) => {
-                            match x1.meaningful_partial_cmp(x2)? {
+                            match x1.subvalue_cmp(x2)? {
                                 Less | Equal => r.push(x1.clone()),
                                 Greater => r.push(x2.clone()),
                             }
@@ -330,7 +330,7 @@ impl Value {
                 let mut r = BTreeMap::new();
                 for (k, v1) in m1.iter() {
                     if let Some(v2) = m2.get(k) {
-                        r.insert(k.clone(), v1.greatest_lower_bound(v2)?);
+                        r.insert(k.clone(), v1.greatest_common_subvalue(v2)?);
                     }
                 }
                 return Some(Map(r));
@@ -340,7 +340,7 @@ impl Value {
     }
 
     /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
-    pub fn least_upper_bound(&self, other: &Self) -> Option<Self> {
+    pub fn least_common_supervalue(&self, other: &Self) -> Option<Self> {
         match (self, other) {
             (Nil, Nil) => Some(Nil),
             (Bool(b1), Bool(b2)) => Some(Bool(*b1 || *b2)),
@@ -366,7 +366,7 @@ impl Value {
                 for i in 0..len {
                     match (v1.get(i), v2.get(i)) {
                         (Some(x1), Some(x2)) => {
-                            match x1.meaningful_partial_cmp(x2)? {
+                            match x1.subvalue_cmp(x2)? {
                                 Equal | Greater => r.push(x1.clone()),
                                 Less => r.push(x2.clone()),
                             }
@@ -381,14 +381,14 @@ impl Value {
                 let mut r = BTreeMap::new();
                 for (k, v1) in m1.iter() {
                     if let Some(v2) = m2.get(k) {
-                        r.insert(k.clone(), v1.least_upper_bound(v2)?);
+                        r.insert(k.clone(), v1.least_common_supervalue(v2)?);
                     } else {
                         r.insert(k.clone(), v1.clone());
                     }
                 }
                 for (k, v2) in m2.iter() {
                     if let Some(v1) = m1.get(k) {
-                        r.insert(k.clone(), v2.least_upper_bound(v1)?);
+                        r.insert(k.clone(), v2.least_common_supervalue(v1)?);
                     } else {
                         r.insert(k.clone(), v2.clone());
                     }
