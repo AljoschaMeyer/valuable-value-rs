@@ -563,13 +563,3 @@ mod tests {
         assert!(Array(Vec::new()) < Map(BTreeMap::new()));
     }
 }
-
-// hybrid = VVDeserializer::new(b"00_6____.2_7E2_", Encoding::Hybrid);
-// assert_eq!(Float(6.27e2), Value::deserialize(&mut hybrid).unwrap());
-//
-// assert_eq!(Value::deserialize(&mut VVDeserializer::new(b"0", Encoding::Hybrid)).unwrap(), Value::Int(0));
-// assert!(Value::deserialize(&mut VVDeserializer::new(b"0.", Encoding::Hybrid)).is_err());
-// assert!(Value::deserialize(&mut VVDeserializer::new(b".0", Encoding::Hybrid)).is_err());
-// assert!(Value::deserialize(&mut VVDeserializer::new(b"0.0E", Encoding::Hybrid)).is_err());
-// assert!(Value::deserialize(&mut VVDeserializer::new(b"_0.0", Encoding::Hybrid)).is_err());
-// assert!(Value::deserialize(&mut VVDeserializer::new(b"0._", Encoding::Hybrid)).is_err());

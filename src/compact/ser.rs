@@ -253,10 +253,13 @@ impl<'a> Serializer for &'a mut VVSerializer {
         _name: &'static str,
         _variant_index: u32,
         variant: &'static str,
-        _len: usize,
+        len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
         self.out.push(0b111_00001);
         variant.serialize(&mut *self)?;
+        if len != 1 {
+            self.serialize_count(len, 0b101_00000)?;
+        }
         Ok(self)
     }
 

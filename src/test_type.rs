@@ -20,6 +20,7 @@ pub struct TestType {
     an_option: Option<u8>,
     unit: (),
     unit_struct: UnitStruct,
+    small_stuct: SmallStruct,
     new_type_struct: NewTypeStruct,
     sequence: Vec<i16>,
     map: BTreeMap<u8, u8>,
@@ -31,11 +32,17 @@ pub struct TestType {
 pub struct UnitStruct;
 
 #[derive(PartialEq, Eq, Serialize, Deserialize, Arbitrary, Debug)]
+pub struct SmallStruct {
+    pub foo: u8,
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize, Arbitrary, Debug)]
 pub struct NewTypeStruct(u8);
 
 #[derive(PartialEq, Eq, Serialize, Deserialize, Arbitrary, Debug)]
 pub enum TestEnum {
     A,
     B(u8),
-    C { field: i8 },
+    C(u8, u8),
+    D { field: i8 },
 }

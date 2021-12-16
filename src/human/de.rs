@@ -827,19 +827,29 @@ impl<'a, 'de> VariantAccess<'de> for Enum<'a, 'de> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn floats() {
-        let f = f64::deserialize(&mut VVDeserializer::new(&[0b010_00000, 0x80, 0, 0, 0, 0, 0, 0, 0])).unwrap();
-        assert_eq!(f, -0.0f64);
-        assert!(f.is_sign_negative());
-    }
-
-    #[test]
-    fn arrays() {
-        let mut d = VVDeserializer::new(&[0b101_11111, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0]);
-        assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::OutOfBoundsArray);
-
-        let mut d = VVDeserializer::new(&[0b101_11111, 126, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0]);
-        assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::Eoi);
-    }
+    // #[test]
+    // fn floats() {
+    //     let f = f64::deserialize(&mut VVDeserializer::new(&[0b010_00000, 0x80, 0, 0, 0, 0, 0, 0, 0])).unwrap();
+    //     assert_eq!(f, -0.0f64);
+    //     assert!(f.is_sign_negative());
+    // }
+    //
+    // #[test]
+    // fn arrays() {
+    //     let mut d = VVDeserializer::new(&[0b101_11111, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0]);
+    //     assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::OutOfBoundsArray);
+    //
+    //     let mut d = VVDeserializer::new(&[0b101_11111, 126, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0]);
+    //     assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::Eoi);
+    // }
 }
+
+// hybrid = VVDeserializer::new(b"00_6____.2_7E2_", Encoding::Hybrid);
+// assert_eq!(Float(6.27e2), Value::deserialize(&mut hybrid).unwrap());
+//
+// assert_eq!(Value::deserialize(&mut VVDeserializer::new(b"0", Encoding::Hybrid)).unwrap(), Value::Int(0));
+// assert!(Value::deserialize(&mut VVDeserializer::new(b"0.", Encoding::Hybrid)).is_err());
+// assert!(Value::deserialize(&mut VVDeserializer::new(b".0", Encoding::Hybrid)).is_err());
+// assert!(Value::deserialize(&mut VVDeserializer::new(b"0.0E", Encoding::Hybrid)).is_err());
+// assert!(Value::deserialize(&mut VVDeserializer::new(b"_0.0", Encoding::Hybrid)).is_err());
+// assert!(Value::deserialize(&mut VVDeserializer::new(b"0._", Encoding::Hybrid)).is_err());
