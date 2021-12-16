@@ -40,12 +40,6 @@ test = false
 doc = false
 
 [[bin]]
-name = "compact_canonicity"
-path = "fuzz_targets/compact/canonicity.rs"
-test = false
-doc = false
-
-[[bin]]
 name = "compact_deserialize_any"
 path = "fuzz_targets/compact/deserialize_any.rs"
 test = false

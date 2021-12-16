@@ -20,20 +20,12 @@ fuzz_target!(|data: &[u8]| {
             tv.encode(&mut enc);
             let v = tv.to_value();
 
-            let mut canonic = VVDeserializer::new(&enc[..], true);
-            let mut compact = VVDeserializer::new(&enc[..], false);
+            let mut compact = VVDeserializer::new(&enc[..]);
 
             match Value::deserialize(&mut compact) {
                 Err(e) => failure(&tv, &enc, &e, "Failed to deserialize compact encoding."),
                 Ok(de_compact) => {
                     test_eq(&tv, &v, &enc, &de_compact);
-
-                    if tv.canonic() {
-                        match Value::deserialize(&mut canonic) {
-                            Err(e) => failure(&tv, &enc, &e, "Failed to deserialize canonic encoding."),
-                            Ok(de_canonic) => test_eq(&tv, &v, &enc, &de_canonic),
-                        }
-                    }
                 }
             }
         }

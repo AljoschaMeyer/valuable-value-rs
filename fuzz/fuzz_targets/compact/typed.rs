@@ -12,13 +12,8 @@ use valuable_value::{
 fuzz_target!(|data: &[u8]| {
     match <TestType>::arbitrary(&mut Unstructured::new(data)) {
         Ok(v) => {
-            if let Ok(enc_canonic) = to_vec(&v, true) {
-                let mut canonic = VVDeserializer::new(&enc_canonic[..], true);
-                test_eq(&v, &mut canonic, &enc_canonic);
-            }
-
-            if let Ok(enc_compact) = to_vec(&v, false) {
-                let mut compact= VVDeserializer::new(&enc_compact[..], false);
+            if let Ok(enc_compact) = to_vec(&v) {
+                let mut compact= VVDeserializer::new(&enc_compact[..]);
                 test_eq(&v, &mut compact, &enc_compact);
             }
         }

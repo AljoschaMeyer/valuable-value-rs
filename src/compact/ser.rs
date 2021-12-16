@@ -27,7 +27,6 @@ impl serde::ser::Error for EncodeError {
 /// https://github.com/AljoschaMeyer/valuable-value/blob/main/README.md
 pub struct VVSerializer {
     out: Vec<u8>,
-    canonic: bool,
 }
 
 impl VVSerializer {
@@ -54,13 +53,12 @@ impl VVSerializer {
     }
 }
 
-pub fn to_vec<T>(value: &T, canonic: bool) -> Result<Vec<u8>, EncodeError>
+pub fn to_vec<T>(value: &T) -> Result<Vec<u8>, EncodeError>
 where
     T: Serialize,
 {
     let mut serializer = VVSerializer {
         out: Vec::new(),
-        canonic,
     };
     value.serialize(&mut serializer)?;
     Ok(serializer.out)
@@ -140,11 +138,7 @@ impl<'a> Serializer for &'a mut VVSerializer {
 
     fn serialize_f64(self, v: f64) -> Result<(), EncodeError> {
         self.out.push(0b010_00000);
-        if self.canonic && v.is_nan() {
-            self.out.extend_from_slice(&[255, 255, 255, 255, 255, 255, 255, 255]);
-        } else {
-            self.out.extend_from_slice(&v.to_bits().to_be_bytes());
-        }
+        self.out.extend_from_slice(&v.to_bits().to_be_bytes());
         Ok(())
     }
 
@@ -157,17 +151,9 @@ impl<'a> Serializer for &'a mut VVSerializer {
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<(), EncodeError> {
-        if self.canonic {
-            self.serialize_count(v.len(), 0b101_00000)?;
-            for b in v {
-                self.serialize_u8(*b)?;
-            }
-            return Ok(());
-        } else {
-            self.serialize_count(v.len(), 0b100_00000)?;
-            self.out.extend_from_slice(v);
-            return Ok(());
-        }
+        self.serialize_count(v.len(), 0b100_00000)?;
+        self.out.extend_from_slice(v);
+        return Ok(());
     }
 
     fn serialize_none(self) -> Result<(), EncodeError> {

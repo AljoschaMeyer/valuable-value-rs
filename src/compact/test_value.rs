@@ -20,24 +20,6 @@ pub enum TestValue {
 }
 
 impl TestValue {
-    pub fn canonic(&self) -> bool {
-        match self {
-            TestValue::Nil | TestValue::Bool(..) => true,
-            TestValue::Int(v) => v.canonic(),
-            TestValue::Float(n) => {
-                if n.is_nan() {
-                    n.to_bits() == u64::MAX
-                } else {
-                    true
-                }
-            }
-            TestValue::ByteString(v) => v.canonic(),
-            TestValue::Array(v) => v.canonic(),
-            TestValue::Set(v) => v.canonic(),
-            TestValue::Map(v) => v.canonic(),
-        }
-    }
-
     pub fn to_value(&self) -> Value {
         match self {
             TestValue::Nil => Value::Nil,
@@ -79,20 +61,6 @@ pub struct Int {
 }
 
 impl Int {
-    pub fn canonic(&self) -> bool {
-        if 0 <= self.n && self.n <= 27 {
-            self.bytes <= 0
-        } else if (i8::MIN as i64) <= self.n && self.n <= (i8::MAX as i64) {
-            self.bytes <= 1
-        } else if (i16::MIN as i64) <= self.n && self.n <= (i16::MAX as i64) {
-            self.bytes <= 2
-        } else if (i32::MIN as i64) <= self.n && self.n <= (i32::MAX as i64) {
-            self.bytes <= 4
-        } else {
-            true
-        }
-    }
-
     pub fn to_value(&self) -> Value {
         Value::Int(self.n)
     }
@@ -147,10 +115,6 @@ pub struct ByteString {
 }
 
 impl ByteString {
-    pub fn canonic(&self) -> bool {
-        false
-    }
-
     pub fn to_value(&self) -> Value {
         let mut arr = Vec::with_capacity(self.elements.len());
         for v in self.elements.iter() {
@@ -174,11 +138,6 @@ pub struct Array {
 }
 
 impl Array {
-    pub fn canonic(&self) -> bool {
-        let correct_width = canonic_width(self.elements.len(), self.count_width);
-        return correct_width && self.elements.iter().all(|v| v.canonic());
-    }
-
     pub fn to_value(&self) -> Value {
         let mut arr = Vec::with_capacity(self.elements.len());
         for v in self.elements.iter() {
@@ -202,10 +161,6 @@ pub struct Set {
 }
 
 impl Set {
-    pub fn canonic(&self) -> bool {
-        false
-    }
-
     pub fn to_value(&self) -> Value {
         let mut m = BTreeMap::new();
         for v in self.elements.iter() {
@@ -229,22 +184,6 @@ pub struct Map {
 }
 
 impl Map {
-    pub fn canonic(&self) -> bool {
-        if !canonic_width(self.elements.len(), self.count_width) {
-            return false;
-        }
-
-        let mut previous = None;
-        for (k, v) in self.elements.iter() {
-            let kv = Some(k.to_value());
-            if !k.canonic() || !v.canonic() || (kv <= previous) {
-                return false;
-            }
-            previous = kv;
-        }
-        return true;
-    }
-
     pub fn to_value(&self) -> Value {
         let mut m = BTreeMap::new();
         for (k, v) in self.elements.iter() {
@@ -259,20 +198,6 @@ impl Map {
             k.encode(out);
             v.encode(out);
         }
-    }
-}
-
-fn canonic_width(n: usize, width: u8) -> bool {
-    if n <= 27 {
-        width <= 0
-    } else if n <= (u8::MAX as usize) {
-        width <= 1
-    } else if n <= (u16::MAX as usize) {
-        width <= 2
-    } else if n <= (u16::MAX as usize) {
-        width <= 4
-    } else {
-        true
     }
 }
 

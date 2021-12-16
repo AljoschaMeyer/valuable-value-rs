@@ -21,9 +21,6 @@ pub enum DecodeError {
     /// Custom, stringly-typed error, used by serde.
     #[error("{0}")]
     Message(String),
-    /// The input was not canonic, but the deserializer was configured to reject non-canonic input.
-    #[error("{0}")]
-    Canonicity(CanonicityCondition),
 
     /// Attempted to parse a number as an `i8` that was out of bounds.
     #[error("i8 out of bounds")]
@@ -108,38 +105,17 @@ impl de::Error for DecodeError {
 
 pub type Error = ParseError<DecodeError>;
 
-/// The different ways of violating canonicity.
-#[derive(Error, Debug, PartialEq, Eq, Clone)]
-pub enum CanonicityCondition {
-    #[error("canonicity requires that NaN is encoded as eight 0xff bytes")]
-    NaN,
-    #[error("canonicity requires that the integer is encoded with fewer bytes")]
-    IntTooWide,
-    #[error("canonicity requires that the string byte count is encoded with fewer bytes")]
-    StringTooWide,
-    #[error("canonicity requires that the array count is encoded with fewer bytes")]
-    ArrayTooWide,
-    #[error("canonicity requires that the map count is encoded with fewer bytes")]
-    MapTooWide,
-    #[error("canonicity requires that (byte) strings are encoded as regular arrays")]
-    Bytes,
-    #[error("canonicity requires that sets are encoded as regular maps")]
-    Set,
-}
-
 /// A structure that deserializes valuable values.
 ///
 /// https://github.com/AljoschaMeyer/valuable-value/blob/main/README.md
 pub struct VVDeserializer<'de> {
     p: ParserHelper<'de>,
-    canonic: bool,
 }
 
 impl<'de> VVDeserializer<'de> {
-    pub fn new(input: &'de [u8], canonic: bool) -> Self {
+    pub fn new(input: &'de [u8]) -> Self {
         VVDeserializer {
             p: ParserHelper::new(input),
-            canonic,
         }
     }
 
@@ -165,11 +141,6 @@ impl<'de> VVDeserializer<'de> {
         let start = self.p.position();
         self.p.advance_or(8, DecodeError::Eoi)?;
         let n = f64::from_bits(u64::from_be_bytes(self.p.slice(start..start + 8).try_into().unwrap()));
-        if self.canonic {
-            if n.is_nan() && (n.to_bits() != u64::MAX) {
-                return self.p.fail(DecodeError::Canonicity(CanonicityCondition::NaN));
-            }
-        }
         return Ok(n);
     }
 
@@ -180,33 +151,21 @@ impl<'de> VVDeserializer<'de> {
                     let start = self.p.position();
                     self.p.advance_or(8, DecodeError::Eoi)?;
                     let n = i64::from_be_bytes(self.p.slice(start..start + 8).try_into().unwrap());
-                    if self.canonic && (i32::MIN as i64) <= n && n <= (i32::MAX as i64) {
-                        return self.p.fail_at_position(DecodeError::Canonicity(CanonicityCondition::IntTooWide), start);
-                    }
                     return Ok(n);
                 } else if b == 0b011_11110 {
                     let start = self.p.position();
                     self.p.advance_or(4, DecodeError::Eoi)?;
                     let n = i32::from_be_bytes(self.p.slice(start..start + 4).try_into().unwrap()) as i64;
-                    if self.canonic && (i16::MIN as i64) <= n && n <= (i16::MAX as i64) {
-                        return self.p.fail_at_position(DecodeError::Canonicity(CanonicityCondition::IntTooWide), start);
-                    }
                     return Ok(n);
                 } else if b == 0b011_11101 {
                     let start = self.p.position();
                     self.p.advance_or(2, DecodeError::Eoi)?;
                     let n = i16::from_be_bytes(self.p.slice(start..start + 2).try_into().unwrap()) as i64;
-                    if self.canonic && (i8::MIN as i64) <= n && n <= (i8::MAX as i64) {
-                        return self.p.fail_at_position(DecodeError::Canonicity(CanonicityCondition::IntTooWide), start);
-                    }
                     return Ok(n);
                 } else if b == 0b011_11100 {
                     let start = self.p.position();
                     self.p.advance_or(1, DecodeError::Eoi)?;
                     let n = i8::from_be_bytes(self.p.slice(start..start + 1).try_into().unwrap()) as i64;
-                    if self.canonic && 0 <= n && n <= 27 {
-                        return self.p.fail_at_position(DecodeError::Canonicity(CanonicityCondition::IntTooWide), start);
-                    }
                     return Ok(n);
                 } else {
                     return Ok((u8::from_be_bytes([b & 0b000_11111])) as i64);
@@ -217,10 +176,7 @@ impl<'de> VVDeserializer<'de> {
     }
 
     fn parse_bytes(&mut self) -> Result<&[u8], Error> {
-        if self.canonic {
-            return self.p.fail(DecodeError::Canonicity(CanonicityCondition::Bytes));
-        }
-        let count = self.parse_count(0b100_00000, DecodeError::ExpectedBytes, CanonicityCondition::StringTooWide, DecodeError::OutOfBoundsString)?;
+        let count = self.parse_count(0b100_00000, DecodeError::ExpectedBytes, DecodeError::OutOfBoundsString)?;
         let start = self.p.position();
         if self.p.rest().len() < count {
             return self.p.unexpected_end_of_input();
@@ -230,16 +186,13 @@ impl<'de> VVDeserializer<'de> {
         }
     }
 
-    fn parse_count(&mut self, tag: u8, expected: DecodeError, too_wide: CanonicityCondition, out_of_bounds: DecodeError) -> Result<usize, Error> {
+    fn parse_count(&mut self, tag: u8, expected: DecodeError, out_of_bounds: DecodeError) -> Result<usize, Error> {
         match self.p.next()? {
             b if b & 0b111_00000 == tag => {
                 let len = if b == (tag | 0b000_11111) {
                     let start = self.p.position();
                     self.p.advance_or(8, DecodeError::Eoi)?;
                     let n = u64::from_be_bytes(self.p.slice(start..start + 8).try_into().unwrap());
-                    if self.canonic && n <= (u32::MAX as u64) {
-                        return self.p.fail_at_position(DecodeError::Canonicity(too_wide), start);
-                    }
                     if n > (i64::MAX as u64) {
                         return self.p.fail(out_of_bounds);
                     }
@@ -248,25 +201,16 @@ impl<'de> VVDeserializer<'de> {
                     let start = self.p.position();
                     self.p.advance_or(4, DecodeError::Eoi)?;
                     let n = u32::from_be_bytes(self.p.slice(start..start + 4).try_into().unwrap()) as u64;
-                    if self.canonic && n <= (u16::MAX as u64) {
-                        return self.p.fail_at_position(DecodeError::Canonicity(too_wide), start);
-                    }
                     n
                 } else if b == (tag | 0b000_11101) {
                     let start = self.p.position();
                     self.p.advance_or(2, DecodeError::Eoi)?;
                     let n = u16::from_be_bytes(self.p.slice(start..start + 2).try_into().unwrap()) as u64;
-                    if self.canonic && n <= (u8::MAX as u64) {
-                        return self.p.fail_at_position(DecodeError::Canonicity(too_wide), start);
-                    }
                     n
                 } else if b == (tag | 0b000_11100) {
                     let start = self.p.position();
                     self.p.advance_or(1, DecodeError::Eoi)?;
                     let n = u8::from_be_bytes(self.p.slice(start..start + 1).try_into().unwrap()) as u64;
-                    if self.canonic && n <= 27 {
-                        return self.p.fail_at_position(DecodeError::Canonicity(too_wide), start);
-                    }
                     n
                 } else {
                     u8::from_be_bytes([b & 0b000_11111]) as u64
@@ -587,11 +531,11 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     {
         match self.p.peek()? & 0b111_00000 {
             0b100_00000 => {
-                let count = self.parse_count(0b100_00000, DecodeError::ExpectedString, CanonicityCondition::StringTooWide, DecodeError::OutOfBoundsString)?;
+                let count = self.parse_count(0b100_00000, DecodeError::ExpectedString, DecodeError::OutOfBoundsString)?;
                 return visitor.visit_seq(StringSeq::new(&mut self, count));
             }
             0b101_00000 => {
-                let count = self.parse_count(0b101_00000, DecodeError::ExpectedArray, CanonicityCondition::ArrayTooWide, DecodeError::OutOfBoundsArray)?;
+                let count = self.parse_count(0b101_00000, DecodeError::ExpectedArray, DecodeError::OutOfBoundsArray)?;
                 return visitor.visit_seq(SequenceAccessor::new(&mut self, count));
             }
             _ => self.p.fail(DecodeError::ExpectedArray),
@@ -623,14 +567,11 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     {
         match self.p.peek()? & 0b111_00000 {
             0b110_00000 => {
-                if self.canonic {
-                    return self.p.fail(DecodeError::Canonicity(CanonicityCondition::Set));
-                }
-                let count = self.parse_count(0b110_00000, DecodeError::ExpectedMap, CanonicityCondition::MapTooWide, DecodeError::OutOfBoundsSet)?;
+                let count = self.parse_count(0b110_00000, DecodeError::ExpectedMap, DecodeError::OutOfBoundsSet)?;
                 return visitor.visit_map(MapAccessor::new(&mut self, count, true));
             }
             0b111_00000 => {
-                let count = self.parse_count(0b111_00000, DecodeError::ExpectedMap, CanonicityCondition::MapTooWide, DecodeError::OutOfBoundsMap)?;
+                let count = self.parse_count(0b111_00000, DecodeError::ExpectedMap, DecodeError::OutOfBoundsMap)?;
                 return visitor.visit_map(MapAccessor::new(&mut self, count, false));
             }
             _ => return self.p.fail(DecodeError::ExpectedMap),
@@ -660,8 +601,7 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     {
         match self.p.peek()? & 0b111_00000 {
             0b100_00000 | 0b110_00000 | 0b111_00000 => Ok(visitor.visit_enum(Enum::new(self))?),
-            0b101_00000 if self.canonic => Ok(visitor.visit_enum(Enum::new(self))?),
-            0b101_00000 if !self.canonic => Ok(visitor.visit_enum(Enum::new(self))?),
+            0b101_00000 => Ok(visitor.visit_enum(Enum::new(self))?),
             _ => self.p.fail(DecodeError::ExpectedEnum(name.to_string()))
         }
     }
@@ -1133,35 +1073,35 @@ mod tests {
 
     #[test]
     fn floats() {
-        let f = f64::deserialize(&mut VVDeserializer::new(&[0b010_00000, 0x80, 0, 0, 0, 0, 0, 0, 0], false)).unwrap();
+        let f = f64::deserialize(&mut VVDeserializer::new(&[0b010_00000, 0x80, 0, 0, 0, 0, 0, 0, 0])).unwrap();
         assert_eq!(f, -0.0f64);
         assert!(f.is_sign_negative());
     }
 
     #[test]
     fn arrays() {
-        let mut d = VVDeserializer::new(&[0b101_11111, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0], false);
+        let mut d = VVDeserializer::new(&[0b101_11111, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0]);
         assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::OutOfBoundsArray);
 
-        let mut d = VVDeserializer::new(&[0b101_11111, 126, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0], false);
+        let mut d = VVDeserializer::new(&[0b101_11111, 126, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0]);
         assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::Eoi);
     }
 
     #[test]
     fn vec_as_string() {
-        let v = Vec::<i32>::deserialize(&mut VVDeserializer::new(&[0b100_00011, 231, 0, 42], false)).unwrap();
+        let v = Vec::<i32>::deserialize(&mut VVDeserializer::new(&[0b100_00011, 231, 0, 42])).unwrap();
         assert_eq!(v, vec![231, 0, 42]);
     }
 
     #[test]
     fn string_as_array() {
-        let v = String::deserialize(&mut VVDeserializer::new(&[0b101_00011, 0b011_11100, 'f' as u8, 0b011_11100,'o' as u8, 0b011_11100,'o' as u8], false)).unwrap();
+        let v = String::deserialize(&mut VVDeserializer::new(&[0b101_00011, 0b011_11100, 'f' as u8, 0b011_11100,'o' as u8, 0b011_11100,'o' as u8])).unwrap();
         assert_eq!(&v, "foo");
     }
 
     #[test]
     fn map_as_set() {
-        let v = BTreeMap::<(), ()>::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0], false)).unwrap();
+        let v = BTreeMap::<(), ()>::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0])).unwrap();
         let mut m = BTreeMap::new();
         m.insert((), ());
         assert_eq!(v, m);
@@ -1169,28 +1109,28 @@ mod tests {
 
     #[test]
     fn option() {
-        let v = Option::<bool>::deserialize(&mut VVDeserializer::new(&[0b100_00100, 'N' as u8, 'o' as u8, 'n' as u8, 'e' as u8], false)).unwrap();
+        let v = Option::<bool>::deserialize(&mut VVDeserializer::new(&[0b100_00100, 'N' as u8, 'o' as u8, 'n' as u8, 'e' as u8])).unwrap();
         assert_eq!(v, None);
 
-        let v = Option::<bool>::deserialize(&mut VVDeserializer::new(&[0b101_00100, 0b011_11100, 'N' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'n' as u8, 0b011_11100, 'e' as u8], false)).unwrap();
+        let v = Option::<bool>::deserialize(&mut VVDeserializer::new(&[0b101_00100, 0b011_11100, 'N' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'n' as u8, 0b011_11100, 'e' as u8])).unwrap();
         assert_eq!(v, None);
 
-        let v = Option::<bool>::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8, 0b001_00001], false)).unwrap();
+        let v = Option::<bool>::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8, 0b001_00001])).unwrap();
         assert_eq!(v, Some(true));
 
-        let v = Option::<bool>::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00100, 0b011_11100, 'S' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'm' as u8, 0b011_11100, 'e' as u8, 0b001_00001], false)).unwrap();
+        let v = Option::<bool>::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00100, 0b011_11100, 'S' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'm' as u8, 0b011_11100, 'e' as u8, 0b001_00001])).unwrap();
         assert_eq!(v, Some(true));
 
-        let v = Option::<()>::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8, 0b000_00000], false)).unwrap();
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8, 0b000_00000])).unwrap();
         assert_eq!(v, Some(()));
 
-        let v = Option::<()>::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00100, 0b011_11100, 'S' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'm' as u8, 0b011_11100, 'e' as u8, 0b000_00000], false)).unwrap();
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00100, 0b011_11100, 'S' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'm' as u8, 0b011_11100, 'e' as u8, 0b000_00000])).unwrap();
         assert_eq!(v, Some(()));
 
-        let v = Option::<()>::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8], false)).unwrap();
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8])).unwrap();
         assert_eq!(v, Some(()));
 
-        let v = Option::<()>::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b101_00100, 0b011_11100, 'S' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'm' as u8, 0b011_11100, 'e' as u8], false)).unwrap();
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b101_00100, 0b011_11100, 'S' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'm' as u8, 0b011_11100, 'e' as u8])).unwrap();
         assert_eq!(v, Some(()));
     }
 
@@ -1201,22 +1141,22 @@ mod tests {
 
     #[test]
     fn structs() {
-        let v = SmallStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00011, 'f' as u8, 'o' as u8, 'o' as u8, 0b011_00001], false)).unwrap();
+        let v = SmallStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00011, 'f' as u8, 'o' as u8, 'o' as u8, 0b011_00001])).unwrap();
         assert_eq!(v.foo, 1);
 
-        let v = SmallStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00011, 0b011_11100, 'f' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'o' as u8, 0b011_00001], false)).unwrap();
+        let v = SmallStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00011, 0b011_11100, 'f' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'o' as u8, 0b011_00001])).unwrap();
         assert_eq!(v.foo, 1);
 
-        let v = NilStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00011, 'f' as u8, 'o' as u8, 'o' as u8, 0], false)).unwrap();
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00011, 'f' as u8, 'o' as u8, 'o' as u8, 0])).unwrap();
         assert_eq!(v.foo, ());
 
-        let v = NilStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00011, 0b011_11100, 'f' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'o' as u8, 0], false)).unwrap();
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00011, 0b011_11100, 'f' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'o' as u8, 0])).unwrap();
         assert_eq!(v.foo, ());
 
-        let v = NilStruct::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b100_00011, 'f' as u8, 'o' as u8, 'o' as u8], false)).unwrap();
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b100_00011, 'f' as u8, 'o' as u8, 'o' as u8])).unwrap();
         assert_eq!(v.foo, ());
 
-        let v = NilStruct::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b101_00011, 0b011_11100, 'f' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'o' as u8], false)).unwrap();
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b101_00011, 0b011_11100, 'f' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'o' as u8])).unwrap();
         assert_eq!(v.foo, ());
     }
 
@@ -1230,49 +1170,49 @@ mod tests {
 
     #[test]
     fn enums() {
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b100_00001, 'A' as u8], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b100_00001, 'A' as u8])).unwrap();
         assert_eq!(v, NilEnum::A);
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b101_00001, 0b011_11100, 'A' as u8], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b101_00001, 0b011_11100, 'A' as u8])).unwrap();
         assert_eq!(v, NilEnum::A);
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'B' as u8, 0], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'B' as u8, 0])).unwrap();
         assert_eq!(v, NilEnum::B(()));
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b100_00001, 'B' as u8], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b100_00001, 'B' as u8])).unwrap();
         assert_eq!(v, NilEnum::B(()));
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00001, 0b011_11100, 'B' as u8, 0], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00001, 0b011_11100, 'B' as u8, 0])).unwrap();
         assert_eq!(v, NilEnum::B(()));
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b101_00001, 0b011_11100, 'B' as u8], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b110_00001, 0b101_00001, 0b011_11100, 'B' as u8])).unwrap();
         assert_eq!(v, NilEnum::B(()));
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'C' as u8, 0b101_00010, 0b011_00000, 0b011_00000], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'C' as u8, 0b101_00010, 0b011_00000, 0b011_00000])).unwrap();
         assert_eq!(v, NilEnum::C(0, 0));
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00001, 0b011_11100, 'C' as u8, 0b101_00010, 0b011_00000, 0b011_00000], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00001, 0b011_11100, 'C' as u8, 0b101_00010, 0b011_00000, 0b011_00000])).unwrap();
         assert_eq!(v, NilEnum::C(0, 0));
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'C' as u8, 0b100_00010, 0, 0], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'C' as u8, 0b100_00010, 0, 0])).unwrap();
         assert_eq!(v, NilEnum::C(0, 0));
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00001, 0b011_11100, 'C' as u8, 0b100_00010, 0, 0], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00001, 0b011_11100, 'C' as u8, 0b100_00010, 0, 0])).unwrap();
         assert_eq!(v, NilEnum::C(0, 0));
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'D' as u8, 0b111_00001, 0b100_00001, 'x' as u8, 0], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'D' as u8, 0b111_00001, 0b100_00001, 'x' as u8, 0])).unwrap();
         assert_eq!(v, NilEnum::D { x: () });
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00001, 0b011_11100, 'D' as u8, 0b111_00001, 0b100_00001, 'x' as u8, 0], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00001, 0b011_11100, 'D' as u8, 0b111_00001, 0b100_00001, 'x' as u8, 0])).unwrap();
         assert_eq!(v, NilEnum::D { x: () });
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'D' as u8, 0b110_00001, 0b100_00001, 'x' as u8], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'D' as u8, 0b110_00001, 0b100_00001, 'x' as u8])).unwrap();
         assert_eq!(v, NilEnum::D { x: () });
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'D' as u8, 0b111_00001, 0b101_00001, 0b011_11100, 'x' as u8, 0], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'D' as u8, 0b111_00001, 0b101_00001, 0b011_11100, 'x' as u8, 0])).unwrap();
         assert_eq!(v, NilEnum::D { x: () });
 
-        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'D' as u8, 0b110_00001, 0b101_00001, 0b011_11100, 'x' as u8], false)).unwrap();
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00001, 'D' as u8, 0b110_00001, 0b101_00001, 0b011_11100, 'x' as u8])).unwrap();
         assert_eq!(v, NilEnum::D { x: () });
     }
 }
