@@ -9,7 +9,7 @@ use serde::de::{
     self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor,
 };
 
-use crate::always_nil::AlwaysNil;
+use crate::helpers::AlwaysNil;
 
 /// Everything that can go wrong during deserialization of a valuable value from the compact
 /// encoding.
@@ -86,9 +86,6 @@ pub enum DecodeError {
     ExpectedEnum(String),
     #[error("expected enum variant (either a string or a singleton map)")]
     ExpectedEnumVariant,
-
-    #[error("{0}")]
-    IntFromByte(#[from] IntFromByteError),
 }
 
 impl Eoi for DecodeError {
@@ -445,7 +442,7 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
         }
     }
 
-    fn deserialize_option<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
@@ -531,8 +528,9 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     {
         match self.p.peek()? & 0b111_00000 {
             0b100_00000 => {
-                let count = self.parse_count(0b100_00000, DecodeError::ExpectedString, DecodeError::OutOfBoundsString)?;
-                return visitor.visit_seq(StringSeq::new(&mut self, count));
+                let bytes = self.parse_bytes()?;
+                let seq = crate::helpers::BytesAsSeq::new(bytes.to_vec(), self.p.position(), DecodeError::OutOfBoundsI8, DecodeError::ExpectedInt);
+                return visitor.visit_seq(seq);
             }
             0b101_00000 => {
                 let count = self.parse_count(0b101_00000, DecodeError::ExpectedArray, DecodeError::OutOfBoundsArray)?;
@@ -651,294 +649,6 @@ impl<'a, 'de> SeqAccess<'de> for SequenceAccessor<'a, 'de> {
         } else {
             return Ok(None);
         }
-    }
-}
-
-struct StringSeq<'a, 'de> {
-    des: &'a mut VVDeserializer<'de>,
-    len: usize,
-    read: usize,
-}
-
-impl<'a, 'de> StringSeq<'a, 'de> {
-    fn new(des: &'a mut VVDeserializer<'de>, len: usize) -> Self {
-        StringSeq { des, len, read: 0 }
-    }
-}
-
-impl<'a, 'de> SeqAccess<'de> for StringSeq<'a, 'de> {
-    type Error = Error;
-
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        if self.read < self.len {
-            let b = self.des.p.next()?;
-            match seed.deserialize(IntFromByte(b)) {
-                Err(e) => return self.des.p.fail(e.into()),
-                Ok(inner) => {
-                    self.read += 1;
-                    return Ok(Some(inner));
-                }
-            }
-        } else {
-            return Ok(None);
-        }
-    }
-}
-
-#[derive(Error, Debug, PartialEq, Eq, Clone)]
-pub enum IntFromByteError {
-    #[error("can only decode a sequence from a string if the sequence contains integers only")]
-    Type,
-    #[error("cannot decode bytes greater than 127 from a byte string into a `i8`")]
-    I8OutOfBounds,
-}
-
-impl de::Error for IntFromByteError {
-    fn custom<T: fmt::Display>(_msg: T) -> Self {
-        IntFromByteError::Type
-    }
-}
-
-struct IntFromByte(u8);
-
-impl<'de> de::Deserializer<'de> for IntFromByte {
-    type Error = IntFromByteError;
-
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_i64(visitor)
-    }
-
-    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        if self.0 <= (i8::MAX as u8) {
-            visitor.visit_i8(self.0 as i8)
-        } else {
-            Err(IntFromByteError::I8OutOfBounds)
-        }
-    }
-
-    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_i16(self.0.into())
-    }
-
-    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_i32(self.0.into())
-    }
-
-    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_i64(self.0.into())
-    }
-
-    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_u8(self.0.into())
-    }
-
-    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_u16(self.0.into())
-    }
-
-    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_u32(self.0.into())
-    }
-
-    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_u64(self.0.into())
-    }
-
-    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        visitor.visit_char(self.0.into())
-    }
-
-    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_unit_struct<V>(
-        self,
-        _name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_newtype_struct<V>(
-        self,
-        _name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_seq<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_tuple_struct<V>(
-        self,
-        _name: &'static str,
-        _len: usize,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_map<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        _name: &'static str,
-        _fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_enum<V>(
-        self,
-        name: &'static str,
-        _variants: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(IntFromByteError::Type)
-    }
-
-    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_any(visitor)
-    }
-
-    fn is_human_readable(&self) -> bool {
-        false
     }
 }
 
@@ -1069,7 +779,7 @@ mod tests {
 
     use serde::{Serialize, Deserialize};
 
-    use crate::test_type::{SmallStruct, TestEnum};
+    use crate::test_type::SmallStruct;
 
     #[test]
     fn floats() {

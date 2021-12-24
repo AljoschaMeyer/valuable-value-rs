@@ -7,10 +7,10 @@ use atm_parser_helper::{ParserHelper, Eoi, Error as ParseError};
 use atm_parser_helper_common_syntax::*;
 
 use serde::de::{
-    self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor,
+    self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor, IntoDeserializer,
 };
 
-use crate::always_nil::AlwaysNil;
+use crate::helpers::AlwaysNil;
 
 /// Everything that can go wrong during deserialization of a valuable value from the human-readable
 /// encoding.
@@ -74,8 +74,8 @@ pub enum DecodeError {
     ExpectedInt,
     #[error("expected option")]
     ExpectedOption,
-    #[error("expected byte string")]
-    ExpectedString,
+    #[error("expected UTF-8 string")]
+    ExpectedUtf8String,
     #[error("expected byte string")]
     ExpectedBytes,
     #[error("expected array")]
@@ -104,6 +104,7 @@ pub enum DecodeError {
 
     #[error("hexadecimal byte string literals must have an even number of digits")]
     ByteStringHexOdd,
+
     #[error("binary byte string literals must have a number of digits divisible by eight")]
     ByteStringBinaryNumber,
     #[error("the bytes of a byte string literals must be integers between 0 and 255")]
@@ -128,6 +129,11 @@ pub enum DecodeError {
     EmptyCollectionComma,
     #[error("expected a colon after the key")]
     ExpectedColon,
+
+    #[error("expected a closing bracket")]
+    ArrayClosing,
+    #[error("expected a closing brace")]
+    MapClosing,
 
     #[error("chars must be encoded as UTF-8 strings containing exactly one unicode codepoint")]
     CharLength,
@@ -229,7 +235,7 @@ impl Utf8StringLiteralE for DecodeError {
     }
 
     fn not_utf8_string_literal() -> Self {
-        Self::ExpectedString
+        Self::ExpectedUtf8String
     }
 }
 
@@ -460,7 +466,7 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
         V: Visitor<'de>,
     {
         spaces(&mut self.p)?;
-        let s = parse_utf8_string(&mut self.p)?;
+        let s = String::deserialize(&mut *self)?;
         let mut cs = s.chars();
         match cs.next() {
             None => self.p.fail(DecodeError::CharLength),
@@ -479,17 +485,35 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
         V: Visitor<'de>,
     {
         spaces(&mut self.p)?;
-        let s = parse_utf8_string(&mut self.p)?;
-        visitor.visit_str(&s)
+        let b = match self.p.peek()? {
+            0x22 => parse_utf8_string(&mut self.p)?,
+            0x5b => {
+                match String::from_utf8(Vec::<u8>::deserialize(&mut *self)?) {
+                    Ok(s) => s,
+                    Err(_) => return self.p.fail(DecodeError::Utf8StringUtf8),
+                }
+            }
+            0x40 => {
+                match self.p.rest().get(1) {
+                    None => return self.p.fail(DecodeError::Eoi),
+                    Some(0x5b | 0x62 | 0x78) => match String::from_utf8(parse_byte_string(&mut self.p)?) {
+                        Ok(s) => s,
+                        Err(_) => return self.p.fail(DecodeError::Utf8StringUtf8),
+                    }
+                    Some(0x22 | 0x40) => parse_utf8_string(&mut self.p)?,
+                    Some(_) => return self.p.fail(DecodeError::Syntax),
+                }
+            }
+            _ => return self.p.fail(DecodeError::ExpectedUtf8String),
+        };
+        visitor.visit_str(&b)
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        spaces(&mut self.p)?;
-        let s = parse_utf8_string(&mut self.p)?;
-        visitor.visit_string(s)
+        self.deserialize_str(visitor)
     }
 
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -497,31 +521,99 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
         V: Visitor<'de>,
     {
         spaces(&mut self.p)?;
-        let b = parse_byte_string(&mut self.p)?;
-        visitor.visit_bytes(&b)
+        let b = match self.p.peek()? {
+            0x22 => parse_utf8_string(&mut self.p)?.into_bytes(),
+            0x5b => Vec::<u8>::deserialize(&mut *self)?,
+            0x40 => {
+                match self.p.rest().get(1) {
+                    None => return self.p.fail(DecodeError::Eoi),
+                    Some(0x5b | 0x62 | 0x78) => parse_byte_string(&mut self.p)?,
+                    Some(0x22 | 0x40) => parse_utf8_string(&mut self.p)?.into_bytes(),
+                    Some(_) => return self.p.fail(DecodeError::Syntax),
+                }
+            }
+            _ => return self.p.fail(DecodeError::ExpectedBytes),
+        };
+        visitor.visit_byte_buf(b)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        spaces(&mut self.p)?;
-        let b = parse_byte_string(&mut self.p)?;
-        visitor.visit_byte_buf(b)
+        self.deserialize_bytes(visitor)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // if self.p.advance_over(&[0b100_00100, 'N' as u8, 'o' as u8, 'n' as u8, 'e' as u8]) || (self.canonic && self.p.advance_over(&[0b101_00100, 0b011_11100, 'N' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'n' as u8, 0b011_11100, 'e' as u8])) {
-        //     return visitor.visit_none();
-        // } else if self.p.advance_over(&[0b111_00001, 0b100_00100, 'S' as u8, 'o' as u8, 'm' as u8, 'e' as u8]) || (self.canonic && self.p.advance_over(&[0b111_00001, 0b101_00100, 0b011_11100, 'S' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'm' as u8, 0b011_11100, 'e' as u8])) {
-        //     return visitor.visit_some(self);
-        // } else {
-        //     return self.p.fail(DecodeError::ExpectedOption);
-        // }
+        spaces(&mut self.p)?;
+        let position = self.p.position();
+        match self.p.peek()? {
+            0x22 | 0x5b => {
+                let tag = String::deserialize(&mut *self)?;
+                if tag == "None" {
+                    return visitor.visit_none();
+                } else {
+                    return self.p.fail_at_position(DecodeError::ExpectedOption, position);
+                }
+            }
+            0x7b => {
+                self.p.advance(1);
+                let tag = String::deserialize(&mut *self)?;
+                if tag != "Some" {
+                    return self.p.fail_at_position(DecodeError::ExpectedOption, position);
+                } else {
+                    spaces(&mut self.p)?;
+                    self.p.expect(':' as u8, DecodeError::ExpectedColon)?;
+                    spaces(&mut self.p)?;
+                    let value = visitor.visit_some(&mut *self)?;
+                    spaces(&mut self.p)?;
+                    if self.p.advance_over(b",") {
+                        spaces(&mut self.p)?;
+                    }
+                    self.p.expect('}' as u8, DecodeError::MapClosing)?;
+                    return Ok(value);
+                }
+            }
+            0x40 => {
+                match self.p.rest().get(1) {
+                    None => return self.p.fail(DecodeError::Eoi),
+                    Some(0x5b | 0x62 | 0x78 | 0x22 | 0x40) => {
+                        let tag = String::deserialize(&mut *self)?;
+                        if tag == "None" {
+                            return visitor.visit_none();
+                        } else {
+                            return self.p.fail_at_position(DecodeError::ExpectedOption, position);
+                        }
+                    }
+                    Some(0x7b) => {
+                        self.p.advance(2);
+                        println!("{:?}", std::str::from_utf8(self.p.rest()));
+                        let tag = String::deserialize(&mut *self)?;
+                        if tag != "Some" {
+                            return self.p.fail_at_position(DecodeError::ExpectedOption, position);
+                        } else {
+                            match visitor.visit_some(AlwaysNil::new()) {
+                                Ok(value) => {
+
+                                    spaces(&mut self.p)?;
+                                    if self.p.advance_over(b",") {
+                                        spaces(&mut self.p)?;
+                                    }
+                                    self.p.expect('}' as u8, DecodeError::MapClosing)?;
+                                    return Ok(value);
+                                }
+                                Err(_) => return self.p.fail(DecodeError::InvalidSet),
+                            }
+                        }
+                    }
+                    Some(_) => return self.p.fail(DecodeError::Syntax),
+                }
+            }
+            _ => self.p.fail_at_position(DecodeError::ExpectedOption, position)
+        }
     }
 
     fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -560,8 +652,37 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
         V: Visitor<'de>,
     {
         spaces(&mut self.p)?;
-        self.p.expect('[' as u8, DecodeError::ExpectedArray)?;
-        return visitor.visit_seq(SequenceAccessor::new(&mut self));
+        match self.p.peek()? {
+            0x22 => {
+                let bytes = parse_utf8_string(&mut self.p)?.into_bytes();
+                let seq = crate::helpers::BytesAsSeq::new(bytes, self.p.position(), DecodeError::OutOfBoundsI8, DecodeError::ExpectedInt);
+                return visitor.visit_seq(seq);
+            }
+            0x5b => {
+                self.p.advance(1);
+                let value = visitor.visit_seq(SequenceAccessor::new(&mut self))?;
+                spaces(&mut self.p)?;
+                self.p.expect(']' as u8, DecodeError::ArrayClosing)?;
+                return Ok(value);
+            }
+            0x40 => {
+                match self.p.rest().get(1) {
+                    None => return self.p.fail(DecodeError::Eoi),
+                    Some(0x5b | 0x62 | 0x78) => {
+                        let bytes = parse_byte_string(&mut self.p)?;
+                        let seq = crate::helpers::BytesAsSeq::new(bytes, self.p.position(), DecodeError::OutOfBoundsI8, DecodeError::ExpectedInt);
+                        return visitor.visit_seq(seq);
+                    }
+                    Some(0x22 | 0x40) => {
+                        let bytes = parse_utf8_string(&mut self.p)?.into_bytes();
+                        let seq = crate::helpers::BytesAsSeq::new(bytes, self.p.position(), DecodeError::OutOfBoundsI8, DecodeError::ExpectedInt);
+                        return visitor.visit_seq(seq);
+                    }
+                    Some(_) => return self.p.fail(DecodeError::Syntax),
+                }
+            }
+            _ => return self.p.fail(DecodeError::ExpectedArray),
+        }
     }
 
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
@@ -588,13 +709,17 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
         V: Visitor<'de>,
     {
         spaces(&mut self.p)?;
-        if self.p.advance_over(b"@{") {
-            return visitor.visit_map(MapAccessor::new(&mut self, true));
+        let value = if self.p.advance_over(b"@{") {
+            visitor.visit_map(MapAccessor::new(&mut self, true))?
         } else if self.p.advance_over(b"{") {
-            return visitor.visit_map(MapAccessor::new(&mut self, false));
+            visitor.visit_map(MapAccessor::new(&mut self, false))?
         } else {
             return self.p.fail(DecodeError::ExpectedMap);
-        }
+        };
+
+        spaces(&mut self.p)?;
+        self.p.expect('}' as u8, DecodeError::MapClosing)?;
+        return Ok(value);
     }
 
     fn deserialize_struct<V>(
@@ -618,13 +743,42 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        unimplemented!();
-        // match self.p.peek()? & 0b111_00000 {
-        //     0b100_00000 | 0b110_00000 | 0b111_00000 => Ok(visitor.visit_enum(Enum::new(self))?),
-        //     0b101_00000 if self.canonic => Ok(visitor.visit_enum(Enum::new(self))?),
-        //     0b101_00000 if !self.canonic => Ok(visitor.visit_enum(Enum::new(self))?),
-        //     _ => self.p.fail(DecodeError::ExpectedEnum(name.to_string()))
-        // }
+        spaces(&mut self.p)?;
+        match self.p.peek()? {
+            0x22 | 0x5b => {
+                return visitor.visit_enum(String::deserialize(&mut *self)?.into_deserializer());
+            }
+            0x7b => {
+                self.p.advance(1);
+                let value = visitor.visit_enum(Enum::new(self, false))?;
+                spaces(&mut self.p)?;
+                if self.p.advance_over(b",") {
+                    spaces(&mut self.p)?;
+                }
+                self.p.expect('}' as u8, DecodeError::MapClosing)?;
+                return Ok(value);
+            }
+            0x40 => {
+                match self.p.rest().get(1) {
+                    None => return self.p.fail(DecodeError::Eoi),
+                    Some(0x5b | 0x62 | 0x78 | 0x22 | 0x40) => {
+                        return visitor.visit_enum(String::deserialize(&mut *self)?.into_deserializer());
+                    }
+                    Some(0x7b) => {
+                        self.p.advance(2);
+                        let value = visitor.visit_enum(Enum::new(self, true))?;
+                        spaces(&mut self.p)?;
+                        if self.p.advance_over(b",") {
+                            spaces(&mut self.p)?;
+                        }
+                        self.p.expect('}' as u8, DecodeError::MapClosing)?;
+                        return Ok(value);
+                    }
+                    Some(_) => return self.p.fail(DecodeError::Syntax),
+                }
+            }
+            _ => self.p.fail(DecodeError::ExpectedEnum(name.to_string()))
+        }
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -666,11 +820,11 @@ impl<'a, 'de> SeqAccess<'de> for SequenceAccessor<'a, 'de> {
     {
         spaces(&mut self.des.p)?;
 
-        if self.des.p.advance_over(b"]") {
+        if let Ok(0x5d) = self.des.p.peek::<DecodeError>() {
             return Ok(None);
         } else if self.des.p.advance_over(b",") {
             spaces(&mut self.des.p)?;
-            if self.des.p.advance_over(b"]") {
+            if let Ok(0x5d) = self.des.p.peek::<DecodeError>() {
                 if self.first {
                     return self.des.p.fail(DecodeError::EmptyCollectionComma);
                 } else {
@@ -709,11 +863,11 @@ impl<'a, 'de> MapAccess<'de> for MapAccessor<'a, 'de> {
     {
         spaces(&mut self.des.p)?;
 
-        if self.des.p.advance_over(b"}") {
+        if let Ok(0x7d) = self.des.p.peek::<DecodeError>() {
             return Ok(None);
         } else if self.des.p.advance_over(b",") {
             spaces(&mut self.des.p)?;
-            if self.des.p.advance_over(b"}") {
+            if let Ok(0x7d) = self.des.p.peek::<DecodeError>() {
                 if self.first {
                     return self.des.p.fail(DecodeError::EmptyCollectionComma);
                 } else {
@@ -754,8 +908,8 @@ struct Enum<'a, 'de> {
 }
 
 impl<'a, 'de> Enum<'a, 'de> {
-    fn new(des: &'a mut VVDeserializer<'de>) -> Self {
-        Enum { des, set: false }
+    fn new(des: &'a mut VVDeserializer<'de>, set: bool) -> Self {
+        Enum { des, set }
     }
 }
 
@@ -767,18 +921,15 @@ impl<'a, 'de> EnumAccess<'de> for Enum<'a, 'de> {
     where
         V: DeserializeSeed<'de>,
     {
-        match self.des.p.peek()? {
-            b if (b & 0b111_00000 == 0b100_00000) || (b & 0b111_00000 == 0b101_00000) => Ok((seed.deserialize(&mut *self.des)?, self)),
-            0b110_00001 => {
-                self.set = true;
-                self.des.p.advance(1);
-                Ok((seed.deserialize(&mut *self.des)?, self))
-            }
-            0b111_00001 => {
-                self.des.p.advance(1);
-                Ok((seed.deserialize(&mut *self.des)?, self))
-            }
-            _ => self.des.p.fail(DecodeError::ExpectedEnumVariant),
+        if self.set {
+            self.set = true;
+            let value = seed.deserialize(&mut *self.des)?;
+            return Ok((value, self));
+        } else {
+            let value = seed.deserialize(&mut *self.des)?;
+            spaces(&mut self.des.p)?;
+            self.des.p.expect(':' as u8, DecodeError::ExpectedColon)?;
+            return Ok((value, self));
         }
     }
 }
@@ -826,30 +977,208 @@ impl<'a, 'de> VariantAccess<'de> for Enum<'a, 'de> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
-    // #[test]
-    // fn floats() {
-    //     let f = f64::deserialize(&mut VVDeserializer::new(&[0b010_00000, 0x80, 0, 0, 0, 0, 0, 0, 0])).unwrap();
-    //     assert_eq!(f, -0.0f64);
-    //     assert!(f.is_sign_negative());
-    // }
-    //
-    // #[test]
-    // fn arrays() {
-    //     let mut d = VVDeserializer::new(&[0b101_11111, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0]);
-    //     assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::OutOfBoundsArray);
-    //
-    //     let mut d = VVDeserializer::new(&[0b101_11111, 126, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0]);
-    //     assert_eq!(Vec::<()>::deserialize(&mut d).unwrap_err().e, DecodeError::Eoi);
-    // }
+    use serde::{Serialize, Deserialize};
+
+    #[test]
+    fn floats() {
+        let f = f64::deserialize(&mut VVDeserializer::new(b"00_6____.2_7E2_")).unwrap();
+        assert_eq!(f, 6.27e2f64);
+
+        assert_eq!(i16::deserialize(&mut VVDeserializer::new(b"0")).unwrap(), 0);
+        assert!(f64::deserialize(&mut VVDeserializer::new(b"0.")).is_err());
+        assert!(f64::deserialize(&mut VVDeserializer::new(b".0")).is_err());
+        assert!(f64::deserialize(&mut VVDeserializer::new(b"0.0E")).is_err());
+        assert!(f64::deserialize(&mut VVDeserializer::new(b"_0.0")).is_err());
+        assert!(f64::deserialize(&mut VVDeserializer::new(b"0._")).is_err());
+    }
+
+    #[test]
+    fn arrays() {
+        let v = Vec::<i32>::deserialize(&mut VVDeserializer::new(b"[231, 0, 42]")).unwrap();
+        assert_eq!(v, vec![231, 0, 42]);
+
+        let v = Vec::<i32>::deserialize(&mut VVDeserializer::new(b"@[231, 0, 42]")).unwrap();
+        assert_eq!(v, vec![231, 0, 42]);
+
+        let v = Vec::<i32>::deserialize(&mut VVDeserializer::new(b"@xe7_00_2a]")).unwrap();
+        assert_eq!(v, vec![231, 0, 42]);
+
+        let v = Vec::<i32>::deserialize(&mut VVDeserializer::new(b"@b1110_0111__0000_0000__0010_1010")).unwrap();
+        assert_eq!(v, vec![231, 0, 42]);
+
+        let v = Vec::<i32>::deserialize(&mut VVDeserializer::new(b"\"A\"")).unwrap();
+        assert_eq!(v, vec![0x41]);
+
+        let v = Vec::<i32>::deserialize(&mut VVDeserializer::new(b"\"\\{41}\"")).unwrap();
+        assert_eq!(v, vec![0x41]);
+
+        let v = Vec::<i32>::deserialize(&mut VVDeserializer::new(b"@@\"A\"@@")).unwrap();
+        assert_eq!(v, vec![0x41]);
+    }
+
+    #[test]
+    fn utf8_strings() {
+        let v = String::deserialize(&mut VVDeserializer::new(b"\"A\"")).unwrap();
+        assert_eq!(&v, "A");
+
+        let v = String::deserialize(&mut VVDeserializer::new(b"[0x41]")).unwrap();
+        assert_eq!(&v, "A");
+
+        let v = String::deserialize(&mut VVDeserializer::new(b"@x41")).unwrap();
+        assert_eq!(&v, "A");
+    }
+
+    #[test]
+    fn chars() {
+        let v = char::deserialize(&mut VVDeserializer::new(b"\"A\"")).unwrap();
+        assert_eq!(v, 'A');
+
+        let v = char::deserialize(&mut VVDeserializer::new(b"[0x41]")).unwrap();
+        assert_eq!(v, 'A');
+
+        let v = char::deserialize(&mut VVDeserializer::new(b"@x41")).unwrap();
+        assert_eq!(v, 'A');
+    }
+
+    #[test]
+    fn maps() {
+        let v = BTreeMap::<(), ()>::deserialize(&mut VVDeserializer::new(b"{nil: nil}")).unwrap();
+        let mut m = BTreeMap::new();
+        m.insert((), ());
+        assert_eq!(v, m);
+
+        let v = BTreeMap::<(), ()>::deserialize(&mut VVDeserializer::new(b"@{nil}")).unwrap();
+        let mut m = BTreeMap::new();
+        m.insert((), ());
+        assert_eq!(v, m);
+    }
+
+    #[test]
+    fn option() {
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(b"\"None\"")).unwrap();
+        assert_eq!(v, None);
+
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(b"[0x4e, 0x6f, 0x6e, 0x65]")).unwrap();
+        assert_eq!(v, None);
+
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(b"@[0x4e, 0x6f, 0x6e, 0x65]")).unwrap();
+        assert_eq!(v, None);
+
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(b"{\"Some\": nil}")).unwrap();
+        assert_eq!(v, Some(()));
+
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(b"@{\"Some\"}")).unwrap();
+        assert_eq!(v, Some(()));
+
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(b"{[0x53, 0x6f, 0x6d, 0x65]: nil}")).unwrap();
+        assert_eq!(v, Some(()));
+
+        let v = Option::<()>::deserialize(&mut VVDeserializer::new(b"@{[0x53, 0x6f, 0x6d, 0x65]}")).unwrap();
+        assert_eq!(v, Some(()));
+    }
+
+    #[derive(PartialEq, Eq, Serialize, Deserialize, Debug)]
+    struct NilStruct {
+        x: (),
+    }
+
+    #[test]
+    fn structs() {
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(b"{\"x\": nil}")).unwrap();
+        assert_eq!(v.x, ());
+
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(b"@{\"x\"}")).unwrap();
+        assert_eq!(v.x, ());
+
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(b"{[0x78]: nil}")).unwrap();
+        assert_eq!(v.x, ());
+
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(b"@{[0x78]}")).unwrap();
+        assert_eq!(v.x, ());
+
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(b"{@[0x78]: nil}")).unwrap();
+        assert_eq!(v.x, ());
+
+        let v = NilStruct::deserialize(&mut VVDeserializer::new(b"@{@[0x78]}")).unwrap();
+        assert_eq!(v.x, ());
+    }
+
+    #[derive(PartialEq, Eq, Serialize, Deserialize, Debug)]
+    pub enum NilEnum {
+        A,
+        B(()),
+        C(u8, i16),
+        D { x: () },
+    }
+
+    #[test]
+    fn enums() {
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"\"A\"")).unwrap();
+        assert_eq!(v, NilEnum::A);
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"[0x41]")).unwrap();
+        assert_eq!(v, NilEnum::A);
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"@x41")).unwrap();
+        assert_eq!(v, NilEnum::A);
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"B\": nil}")).unwrap();
+        assert_eq!(v, NilEnum::B(()));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"@{\"B\"}")).unwrap();
+        assert_eq!(v, NilEnum::B(()));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{[0x42]: nil}")).unwrap();
+        assert_eq!(v, NilEnum::B(()));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"@{[0x42]}")).unwrap();
+        assert_eq!(v, NilEnum::B(()));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{@x42: nil}")).unwrap();
+        assert_eq!(v, NilEnum::B(()));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"@{@x42}")).unwrap();
+        assert_eq!(v, NilEnum::B(()));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"C\": [0, 0]}")).unwrap();
+        assert_eq!(v, NilEnum::C(0, 0));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{[0x43]: [0, 0]}")).unwrap();
+        assert_eq!(v, NilEnum::C(0, 0));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{@x43: [0, 0]}")).unwrap();
+        assert_eq!(v, NilEnum::C(0, 0));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"C\": @[0, 0]}")).unwrap();
+        assert_eq!(v, NilEnum::C(0, 0));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"C\": \"\\0\\0\"}")).unwrap();
+        assert_eq!(v, NilEnum::C(0, 0));
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"D\": {\"x\": nil}}")).unwrap();
+        assert_eq!(v, NilEnum::D { x: () });
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"D\": @{\"x\"}}")).unwrap();
+        assert_eq!(v, NilEnum::D { x: () });
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"D\": {[0x78]: nil}}")).unwrap();
+        assert_eq!(v, NilEnum::D { x: () });
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"D\": @{[0x78]}}")).unwrap();
+        assert_eq!(v, NilEnum::D { x: () });
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"D\": {@[0x78]: nil}}")).unwrap();
+        assert_eq!(v, NilEnum::D { x: () });
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{\"D\": @{@[0x78]}}")).unwrap();
+        assert_eq!(v, NilEnum::D { x: () });
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{[0x44]: {\"x\": nil}}")).unwrap();
+        assert_eq!(v, NilEnum::D { x: () });
+
+        let v = NilEnum::deserialize(&mut VVDeserializer::new(b"{@x44: {\"x\": nil}}")).unwrap();
+        assert_eq!(v, NilEnum::D { x: () });
+    }
 }
-
-// hybrid = VVDeserializer::new(b"00_6____.2_7E2_", Encoding::Hybrid);
-// assert_eq!(Float(6.27e2), Value::deserialize(&mut hybrid).unwrap());
-//
-// assert_eq!(Value::deserialize(&mut VVDeserializer::new(b"0", Encoding::Hybrid)).unwrap(), Value::Int(0));
-// assert!(Value::deserialize(&mut VVDeserializer::new(b"0.", Encoding::Hybrid)).is_err());
-// assert!(Value::deserialize(&mut VVDeserializer::new(b".0", Encoding::Hybrid)).is_err());
-// assert!(Value::deserialize(&mut VVDeserializer::new(b"0.0E", Encoding::Hybrid)).is_err());
-// assert!(Value::deserialize(&mut VVDeserializer::new(b"_0.0", Encoding::Hybrid)).is_err());
-// assert!(Value::deserialize(&mut VVDeserializer::new(b"0._", Encoding::Hybrid)).is_err());
