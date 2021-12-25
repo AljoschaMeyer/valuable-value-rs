@@ -243,9 +243,7 @@ impl<'a> Serializer for &'a mut VVSerializer {
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
         self.out.push(0b111_00001);
         variant.serialize(&mut *self)?;
-        if len != 1 {
-            self.serialize_count(len, 0b101_00000)?;
-        }
+        self.serialize_count(len, 0b101_00000)?;
         Ok(self)
     }
 

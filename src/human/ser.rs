@@ -29,35 +29,14 @@ pub struct VVSerializer {
     out: Vec<u8>,
     indentation: usize,
     current_indentation: usize,
+    multiline: bool,
 }
 
 impl VVSerializer {
     /// Create a new serializer, writing human-readable encoding into the given Vec.
     /// Does pretty-printing if the indentation is greater than zero.
     pub fn new(out: Vec<u8>, indentation: usize) -> Self {
-        VVSerializer { out, indentation, current_indentation: 0 }
-    }
-
-    fn serialize_count(&mut self, n: usize, tag: u8) -> Result<(), EncodeError> {
-        if n <= 27 {
-            self.out.push(tag | (n as u8));
-        } else if n <= (u8::MAX as usize) {
-            self.out.push(tag | 0b000_11100);
-            self.out.extend_from_slice(&(n as u8).to_be_bytes());
-        } else if n <= (u16::MAX as usize) {
-            self.out.push(tag | 0b000_11101);
-            self.out.extend_from_slice(&(n as u16).to_be_bytes());
-        } else if n <= (u32::MAX as usize) {
-            self.out.push(tag | 0b000_11101);
-            self.out.extend_from_slice(&(n as u32).to_be_bytes());
-        } else if n <= (i64::MAX as usize) {
-            self.out.push(tag | 0b000_11111);
-            self.out.extend_from_slice(&(n as u64).to_be_bytes());
-        } else {
-            return Err(EncodeError::OutOfBoundsCollection)
-        }
-
-        Ok(())
+        VVSerializer { out, indentation, current_indentation: 0, multiline: false }
     }
 }
 
@@ -85,7 +64,7 @@ impl<'a> Serializer for &'a mut VVSerializer {
     type SerializeStructVariant = Self;
 
     fn serialize_bool(self, v: bool) -> Result<(), EncodeError> {
-        Ok(self.out.push(if v { 0b001_00001 } else { 0b001_00000 }))
+        Ok(self.out.extend_from_slice(if v { b"true" } else { b"false" }))
     }
 
     fn serialize_i8(self, v: i8) -> Result<(), EncodeError> {
@@ -101,22 +80,8 @@ impl<'a> Serializer for &'a mut VVSerializer {
     }
 
     fn serialize_i64(self, v: i64) -> Result<(), EncodeError> {
-        if 0 <= v && v <= 27 {
-            self.out.push(0b011_00000 | (v as u8));
-        } else if (i8::MIN as i64) <= v && v <= (i8::MAX as i64) {
-            self.out.push(0b011_11100);
-            self.out.extend_from_slice(&(v as i8).to_be_bytes());
-        } else if (i16::MIN as i64) <= v && v <= (i16::MAX as i64) {
-            self.out.push(0b011_11101);
-            self.out.extend_from_slice(&(v as i16).to_be_bytes());
-        } else if (i32::MIN as i64) <= v && v <= (i32::MAX as i64) {
-            self.out.push(0b011_11110);
-            self.out.extend_from_slice(&(v as i32).to_be_bytes());
-        } else {
-            self.out.push(0b011_11111);
-            self.out.extend_from_slice(&(v as i64).to_be_bytes());
-        }
-
+        let mut buffer = itoa::Buffer::new();
+        self.out.extend_from_slice(buffer.format(v).as_bytes());
         Ok(())
     }
 
@@ -145,22 +110,70 @@ impl<'a> Serializer for &'a mut VVSerializer {
     }
 
     fn serialize_f64(self, v: f64) -> Result<(), EncodeError> {
-        self.out.push(0b010_00000);
-        self.out.extend_from_slice(&v.to_bits().to_be_bytes());
+        if v.is_nan() {
+            self.out.extend_from_slice(b"NaN");
+        } else if v == f64::INFINITY {
+            self.out.extend_from_slice(b"Inf");
+        } else if v == f64::NEG_INFINITY {
+            self.out.extend_from_slice(b"-Inf");
+        } else {
+            let config = pretty_dtoa::FmtFloatConfig::default()
+                .add_point_zero(true);
+            self.out.extend_from_slice(pretty_dtoa::dtoa(v, config).as_bytes());
+        }
+
         Ok(())
     }
 
     fn serialize_char(self, v: char) -> Result<(), EncodeError> {
-        self.serialize_u32(v as u32)
+        self.serialize_str(&v.to_string())
     }
 
     fn serialize_str(self, v: &str) -> Result<(), EncodeError> {
-        self.serialize_bytes(v.as_bytes())
+        self.out.extend_from_slice(format!("{}", v).as_bytes());
+        Ok(())
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<(), EncodeError> {
-        self.serialize_count(v.len(), 0b100_00000)?;
-        self.out.extend_from_slice(v);
+        self.out.extend_from_slice(b"@[");
+
+        match v.len() {
+            0 => self.out.push(']' as u8),
+            1 => {
+                self.serialize_u8(v[0])?;
+                self.out.push(']' as u8);
+            }
+            _ if self.indentation == 0 => {
+                for i in v.iter() {
+                    self.serialize_u8(*i)?;
+                    self.out.extend_from_slice(b", ");
+                }
+                self.out.push(']' as u8);
+            }
+            _ => {
+                self.out.push('\n' as u8);
+                self.current_indentation += 1;
+
+                for i in v.iter() {
+                    for _ in 0..self.current_indentation {
+                        for _ in 0..self.indentation {
+                            self.out.push(' ' as u8);
+                        }
+                    }
+                    self.serialize_u8(*i)?;
+                    self.out.extend_from_slice(b",\n");
+                }
+
+                self.current_indentation -= 1;
+                for _ in 0..self.current_indentation {
+                    for _ in 0..self.indentation {
+                        self.out.push(' ' as u8);
+                    }
+                }
+                self.out.push(']' as u8);
+            }
+        }
+
         return Ok(());
     }
 
@@ -172,13 +185,17 @@ impl<'a> Serializer for &'a mut VVSerializer {
     where
         T: ?Sized + Serialize,
     {
-        self.out.push(0b111_00001);
-        self.serialize_str("Some")?;
-        value.serialize(self)
+        self.out.extend_from_slice(b"{\"Some\":");
+        if self.indentation != 0 {
+            self.out.push(' ' as u8);
+        }
+        value.serialize(&mut *self)?;
+        self.out.push('}' as u8);
+        Ok(())
     }
 
     fn serialize_unit(self) -> Result<(), EncodeError> {
-        Ok(self.out.push(0b000_00000))
+        Ok(self.out.extend_from_slice(b"nil"))
     }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<(), EncodeError> {
@@ -215,19 +232,24 @@ impl<'a> Serializer for &'a mut VVSerializer {
     where
         T: ?Sized + Serialize,
     {
-        self.out.push(0b111_00001);
+        self.out.push('{' as u8);
         variant.serialize(&mut *self)?;
-        value.serialize(&mut *self)
+        self.out.extend_from_slice(b": ");
+        value.serialize(&mut *self)?;
+        self.out.push('}' as u8);
+        Ok(())
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        self.out.push('[' as u8);
         match len {
-            None => return Err(EncodeError::UnknownLength),
-            Some(len) => {
-                self.serialize_count(len, 0b101_00000)?;
-                return Ok(self);
+            Some(0 | 1) => self.multiline = false,
+            _ => {
+                self.multiline = true;
+                self.current_indentation += 1;
             }
         }
+        Ok(self)
     }
 
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
@@ -249,22 +271,25 @@ impl<'a> Serializer for &'a mut VVSerializer {
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        self.out.push(0b111_00001);
-        variant.serialize(&mut *self)?;
-        if len != 1 {
-            self.serialize_count(len, 0b101_00000)?;
-        }
-        Ok(self)
+        unimplemented!();
+        // self.out.push(0b111_00001);
+        // variant.serialize(&mut *self)?;
+        // if len != 1 {
+        //     self.serialize_count(len, 0b101_00000)?;
+        // }
+        // Ok(self)
     }
 
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        self.out.push('{' as u8);
         match len {
-            None => return Err(EncodeError::UnknownLength),
-            Some(len) => {
-                self.serialize_count(len, 0b111_00000)?;
-                return Ok(self);
+            Some(0 | 1) => self.multiline = false,
+            _ => {
+                self.multiline = true;
+                self.current_indentation += 1;
             }
         }
+        Ok(self)
     }
 
     fn serialize_struct(
@@ -296,10 +321,37 @@ impl<'a> ser::SerializeSeq for &'a mut VVSerializer {
     where
         T: ?Sized + Serialize,
     {
-        value.serialize(&mut **self)
+        if self.multiline {
+            for _ in 0..self.current_indentation {
+                for _ in 0..self.indentation {
+                    self.out.push(' ' as u8);
+                }
+            }
+        }
+        let old = self.multiline;
+        value.serialize(&mut **self)?;
+        self.multiline = old;
+
+        if self.multiline {
+            self.out.push(',' as u8);
+            if self.indentation != 0 {
+                self.out.push('\n' as u8);
+            }
+        }
+
+        Ok(())
     }
 
     fn end(self) -> Result<(), EncodeError> {
+        if self.multiline {
+            self.current_indentation -= 1;
+            for _ in 0..self.current_indentation {
+                for _ in 0..self.indentation {
+                    self.out.push(' ' as u8);
+                }
+            }
+        }
+        self.out.push(']' as u8);
         Ok(())
     }
 }
@@ -312,11 +364,11 @@ impl<'a> ser::SerializeTuple for &'a mut VVSerializer {
     where
         T: ?Sized + Serialize,
     {
-        value.serialize(&mut **self)
+        ser::SerializeSeq::serialize_element(self, value)
     }
 
     fn end(self) -> Result<(), EncodeError> {
-        Ok(())
+        ser::SerializeSeq::end(self)
     }
 }
 
@@ -328,11 +380,11 @@ impl<'a> ser::SerializeTupleStruct for &'a mut VVSerializer {
     where
         T: ?Sized + Serialize,
     {
-        value.serialize(&mut **self)
+        ser::SerializeSeq::serialize_element(self, value)
     }
 
     fn end(self) -> Result<(), EncodeError> {
-        Ok(())
+        ser::SerializeSeq::end(self)
     }
 }
 
@@ -360,17 +412,52 @@ impl<'a> ser::SerializeMap for &'a mut VVSerializer {
     where
         T: ?Sized + Serialize,
     {
-        key.serialize(&mut **self)
+        if self.multiline {
+            for _ in 0..self.current_indentation {
+                for _ in 0..self.indentation {
+                    self.out.push(' ' as u8);
+                }
+            }
+        }
+        let old = self.multiline;
+        key.serialize(&mut **self)?;
+        self.multiline = old;
+
+        self.out.push(':' as u8);
+        if self.indentation != 0 {
+            self.out.push(' ' as u8);
+        }
+
+        Ok(())
     }
 
     fn serialize_value<T>(&mut self, value: &T) -> Result<(), EncodeError>
     where
         T: ?Sized + Serialize,
     {
-        value.serialize(&mut **self)
+        let old = self.multiline;
+        value.serialize(&mut **self)?;
+        self.multiline = old;
+
+        if self.multiline {
+            self.out.push(',' as u8);
+            if self.indentation != 0 {
+                self.out.push('\n' as u8);
+            }
+        }
+        Ok(())
     }
 
     fn end(self) -> Result<(), EncodeError> {
+        if self.multiline {
+            self.current_indentation -= 1;
+            for _ in 0..self.current_indentation {
+                for _ in 0..self.indentation {
+                    self.out.push(' ' as u8);
+                }
+            }
+        }
+        self.out.push('}' as u8);
         Ok(())
     }
 }

@@ -14,5 +14,6 @@ thiserror = "1.0.30"
 # panda_pile = "0.2.0"
 arbitrary = { version = "1.0.3", optional = true, features = ["derive"] }
 pretty_dtoa = "0.3.0"
+itoa = "1.0.1"
 atm_parser_helper = "1.0.0"
 atm_parser_helper_common_syntax = "1.0.0"
