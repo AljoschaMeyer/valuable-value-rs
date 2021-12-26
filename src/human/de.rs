@@ -12,8 +12,7 @@ use serde::de::{
 
 use crate::helpers::AlwaysNil;
 
-/// Everything that can go wrong during deserialization of a valuable value from the human-readable
-/// encoding.
+/// Everything that can go wrong during deserialization of a valuable value from the human-readable encoding.
 #[derive(Error, Debug, PartialEq, Eq, Clone)]
 pub enum DecodeError {
     /// Unexpectedly reached the end of the input.
@@ -125,8 +124,6 @@ pub enum DecodeError {
 
     #[error("expected a comma to separate collection elements")]
     ExpectedComma,
-    #[error("empty collections may not contain a comma")]
-    EmptyCollectionComma,
     #[error("expected a colon after the key")]
     ExpectedColon,
 
@@ -247,20 +244,22 @@ impl de::Error for DecodeError {
 
 pub type Error = ParseError<DecodeError>;
 
-/// A structure that deserializes valuable values.
+/// A struct that deserializes valuable values from the [human-readable encoding](https://github.com/AljoschaMeyer/valuable-value#encodings).
 ///
-/// https://github.com/AljoschaMeyer/valuable-value/blob/main/README.md
+/// Does not enforce that the input must be empty after the first valid code.
 pub struct VVDeserializer<'de> {
     p: ParserHelper<'de>,
 }
 
 impl<'de> VVDeserializer<'de> {
+    /// Create a new [`VVDeserializer`](VVDeserializer) that deserializes from the input slice.
     pub fn new(input: &'de [u8]) -> Self {
         VVDeserializer {
             p: ParserHelper::new(input),
         }
     }
 
+    /// Return how many input bytes have been already read.
     pub fn position(&self) -> usize {
         self.p.position()
     }
@@ -590,7 +589,6 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut VVDeserializer<'de> {
                     }
                     Some(0x7b) => {
                         self.p.advance(2);
-                        println!("{:?}", std::str::from_utf8(self.p.rest()));
                         let tag = String::deserialize(&mut *self)?;
                         if tag != "Some" {
                             return self.p.fail_at_position(DecodeError::ExpectedOption, position);
@@ -819,25 +817,23 @@ impl<'a, 'de> SeqAccess<'de> for SequenceAccessor<'a, 'de> {
         T: DeserializeSeed<'de>,
     {
         spaces(&mut self.des.p)?;
+        let c = self.des.p.peek::<DecodeError>()?;
 
-        if let Ok(0x5d) = self.des.p.peek::<DecodeError>() {
+        if c == (']' as u8) {
             return Ok(None);
-        } else if self.des.p.advance_over(b",") {
+        } else if c == (',' as u8) && self.first {
+            self.des.p.advance(1);
             spaces(&mut self.des.p)?;
-            if let Ok(0x5d) = self.des.p.peek::<DecodeError>() {
-                if self.first {
-                    return self.des.p.fail(DecodeError::EmptyCollectionComma);
-                } else {
-                    return Ok(None);
-                }
-            } else {
-                return Ok(Some(seed.deserialize(&mut *self.des)?));
+            match self.des.p.peek::<DecodeError>() {
+                Ok(0x5d) => return Ok(None),
+                _ => return self.des.p.fail(DecodeError::ArrayClosing),
             }
-        } else if !self.first {
-            return self.des.p.fail(DecodeError::ExpectedComma);
         } else {
             self.first = false;
-            return Ok(Some(seed.deserialize(&mut *self.des)?));
+            let value = seed.deserialize(&mut *self.des)?;
+            spaces(&mut self.des.p)?;
+            self.des.p.advance_over(b",");
+            return Ok(Some(value));
         }
     }
 }
@@ -862,25 +858,21 @@ impl<'a, 'de> MapAccess<'de> for MapAccessor<'a, 'de> {
         K: DeserializeSeed<'de>,
     {
         spaces(&mut self.des.p)?;
+        let c = self.des.p.peek::<DecodeError>()?;
 
-        if let Ok(0x7d) = self.des.p.peek::<DecodeError>() {
+        if c == ('}' as u8) {
             return Ok(None);
-        } else if self.des.p.advance_over(b",") {
+        } else if c == (',' as u8) && self.first {
+            self.des.p.advance(1);
             spaces(&mut self.des.p)?;
-            if let Ok(0x7d) = self.des.p.peek::<DecodeError>() {
-                if self.first {
-                    return self.des.p.fail(DecodeError::EmptyCollectionComma);
-                } else {
-                    return Ok(None);
-                }
-            } else {
-                return Ok(Some(seed.deserialize(&mut *self.des)?));
+            match self.des.p.peek::<DecodeError>() {
+                Ok(0x7d) => return Ok(None),
+                _ => return self.des.p.fail(DecodeError::MapClosing),
             }
-        } else if !self.first {
-            return self.des.p.fail(DecodeError::ExpectedComma);
         } else {
             self.first = false;
-            return Ok(Some(seed.deserialize(&mut *self.des)?));
+            let value = seed.deserialize(&mut *self.des)?;
+            return Ok(Some(value));
         }
     }
 
@@ -889,6 +881,8 @@ impl<'a, 'de> MapAccess<'de> for MapAccessor<'a, 'de> {
         V: DeserializeSeed<'de>,
     {
         if self.set {
+            spaces(&mut self.des.p)?;
+            self.des.p.advance_over(b",");
             match seed.deserialize(AlwaysNil::new()) {
                 Ok(nil) => return Ok(nil),
                 Err(_) => return self.des.p.fail(DecodeError::InvalidSet),
@@ -897,7 +891,10 @@ impl<'a, 'de> MapAccess<'de> for MapAccessor<'a, 'de> {
             spaces(&mut self.des.p)?;
             self.des.p.expect(':' as u8, DecodeError::ExpectedColon)?;
             spaces(&mut self.des.p)?;
-            return Ok(seed.deserialize(&mut *self.des)?);
+            let value = seed.deserialize(&mut *self.des)?;
+            spaces(&mut self.des.p)?;
+            self.des.p.advance_over(b",");
+            return Ok(value);
         }
     }
 }

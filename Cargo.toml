@@ -1,19 +1,18 @@
 [package]
 name = "valuable_value"
-version = "0.1.0"
+description = "Valuable values for rust."
+version = "1.0.0"
 edition = "2018"
-
-[features]
-# arbitrary = ["atm_parser_helper_common_syntax/default"]
-default = ["arbitrary"]
+repository = "https://github.com/AljoschaMeyer/valuable-value-rs"
+authors = ["Aljoscha Meyer <mail@aljoscha-meyer.de>"]
+license = "CC-PDDC"
 
 [dependencies]
 serde = {version = "1.0.126", features = ["derive"]}
 strtod2 = "0.0.1"
 thiserror = "1.0.30"
-# panda_pile = "0.2.0"
 arbitrary = { version = "1.0.3", optional = true, features = ["derive"] }
 pretty_dtoa = "0.3.0"
 itoa = "1.0.1"
 atm_parser_helper = "1.0.0"
-atm_parser_helper_common_syntax = "1.0.0"
+atm_parser_helper_common_syntax = {version = "2.0.0", features = ["arbitrary"] }

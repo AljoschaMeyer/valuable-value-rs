@@ -1,3 +1,4 @@
+//! Generate valid compact codes.
 use core::cmp::max;
 
 use std::collections::BTreeMap;
@@ -6,7 +7,7 @@ use arbitrary::Arbitrary;
 
 use crate::value::Value;
 
-/// A valuable value of arbitrary shape, together with information on how to encode it. Intended for generating varied but valid encodings for testing purposes.
+/// A valuable value of arbitrary shape, together with information on how to encode it. Intended for generating varied but valid compact encodings for testing purposes.
 #[derive(Arbitrary, Debug)]
 pub enum TestValue {
     Nil,
@@ -20,6 +21,7 @@ pub enum TestValue {
 }
 
 impl TestValue {
+    /// Convert a [`TestValue`](TestValue) a regular [`Value`](crate::Value).
     pub fn to_value(&self) -> Value {
         match self {
             TestValue::Nil => Value::Nil,
@@ -33,6 +35,7 @@ impl TestValue {
         }
     }
 
+    /// Encode a [`TestValue`](TestValue) into a `Vec`.
     pub fn encode(&self, out: &mut Vec<u8>) {
         match self {
             TestValue::Nil => {

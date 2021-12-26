@@ -9,9 +9,11 @@ use std::collections::BTreeMap;
 
 use serde::{Serialize, Serializer, Deserialize, Deserializer, de::{self, Visitor, SeqAccess}};
 
-/// Represents a valuable value of arbitrary shape.
+/// A type for working with valuable values of arbitrary shape
 ///
-/// The implementations of `PartialEq` and `Eq` adheres to the [equality relation](https://github.com/AljoschaMeyer/valuable-value#equality) of the evaluable value specification, and the implementations of `PartialOrd` and `Ord` adhere to the [linear order](https://github.com/AljoschaMeyer/valuable-value#linear-order) of the specification.
+/// The implementations of `PartialEq` and `Eq` adhere to the [equality relation](https://github.com/AljoschaMeyer/valuable-value#equality) of the valuable value specification, and the implementations of `PartialOrd` and `Ord` (*both* of them) adhere to the [canonic linear order](https://github.com/AljoschaMeyer/valuable-value#canonic-linear-order). The [subvalue relation](https://github.com/AljoschaMeyer/valuable-value#subvalues) is implemented in additional methods that do not correspond to any trait.
+///
+/// Serialization and deserialization can be performed via serde.
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Clone)]
 pub enum Value {
@@ -45,7 +47,7 @@ impl fmt::Debug for Value {
 }
 
 impl PartialEq for Value {
-    /// See https://github.com/AljoschaMeyer/valuable-value#equality
+    /// Adheres to the [equality relation](https://github.com/AljoschaMeyer/valuable-value#equality).
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) => true,
@@ -62,14 +64,14 @@ impl PartialEq for Value {
 impl Eq for Value {}
 
 impl PartialOrd for Value {
-    /// See https://github.com/AljoschaMeyer/valuable-value#linear-order
+    /// Adheres to the [canonic linear order](https://github.com/AljoschaMeyer/valuable-value#canonic-linear-order).
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Value {
-    /// See https://github.com/AljoschaMeyer/valuable-value#linear-order
+    /// Adheres to the [canonic linear order](https://github.com/AljoschaMeyer/valuable-value#canonic-linear-order).
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Nil, Nil) => Equal,
@@ -131,7 +133,7 @@ impl Ord for Value {
 }
 
 impl Value {
-    /// Implements the [meaningful partial order](https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order) on the valuable values.
+    /// Implements the [subvalue relation](https://github.com/AljoschaMeyer/valuable-value#subvalues) on the valuable values.
     pub fn subvalue_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => Some(self.cmp(other)),
@@ -232,7 +234,7 @@ impl Value {
         }
     }
 
-    /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
+    /// Return whether `self` is a [subvalue](https://github.com/AljoschaMeyer/valuable-value#subvalues) of `other` but is not equal to `other`.
     pub fn strict_subvalue(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => self.lt(other),
@@ -246,7 +248,7 @@ impl Value {
         }
     }
 
-    /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
+    /// Return whether `self` is a [subvalue](https://github.com/AljoschaMeyer/valuable-value#subvalues) of `other`.
     pub fn subvalue(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => self.le(other),
@@ -260,7 +262,7 @@ impl Value {
         }
     }
 
-    /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
+    /// Return whether `other` is a [subvalue](https://github.com/AljoschaMeyer/valuable-value#subvalues) of `self` but is not equal to `self`.
     pub fn strict_supervalue(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => self.gt(other),
@@ -274,7 +276,7 @@ impl Value {
         }
     }
 
-    /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
+    /// Return whether `other` is a [subvalue](https://github.com/AljoschaMeyer/valuable-value#subvalues) of `self`.
     pub fn supervalue(&self, other: &Self) -> bool {
         match (self, other) {
             (Nil, Nil) | (Bool(_), Bool(_)) | (Int(_), Int(_)) | (Float(_), Float(_)) => self.ge(other),
@@ -288,7 +290,7 @@ impl Value {
         }
     }
 
-    /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
+    /// Compute a greatest lower bound according to the [subvalue relation](https://github.com/AljoschaMeyer/valuable-value#subvalues).
     pub fn greatest_common_subvalue(&self, other: &Self) -> Option<Self> {
         match (self, other) {
             (Nil, Nil) => Some(Nil),
@@ -339,7 +341,7 @@ impl Value {
         }
     }
 
-    /// See https://github.com/AljoschaMeyer/valuable-value#a-meaningful-partial-order
+    /// Compute a least upper bound according to the [subvalue relation](https://github.com/AljoschaMeyer/valuable-value#subvalues).
     pub fn least_common_supervalue(&self, other: &Self) -> Option<Self> {
         match (self, other) {
             (Nil, Nil) => Some(Nil),

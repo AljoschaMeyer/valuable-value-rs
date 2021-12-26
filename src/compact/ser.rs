@@ -3,7 +3,7 @@ use std::fmt;
 use serde::ser::{self, Serializer, Serialize};
 use thiserror::Error;
 
-/// Everything that can go wrong during serialization.
+/// Everything that can go wrong during serialization of a valuable value into the compact encoding.
 #[derive(Error, Debug, PartialEq, Eq, Clone)]
 pub enum EncodeError {
     #[error("{0}")]
@@ -22,14 +22,17 @@ impl serde::ser::Error for EncodeError {
     }
 }
 
-/// A structure that serializes valuable values in the compact encoding.
-///
-/// https://github.com/AljoschaMeyer/valuable-value/blob/main/README.md
+/// A structure that serializes valuable values in the [compact encoding](https://github.com/AljoschaMeyer/valuable-value#compact-encoding).
 pub struct VVSerializer {
     out: Vec<u8>,
 }
 
 impl VVSerializer {
+    /// Create a new serializer, writing compact encoding into the given Vec.
+    pub fn new(out: Vec<u8>) -> Self {
+        VVSerializer { out }
+    }
+
     fn serialize_count(&mut self, n: usize, tag: u8) -> Result<(), EncodeError> {
         if n <= 27 {
             self.out.push(tag | (n as u8));
@@ -53,6 +56,7 @@ impl VVSerializer {
     }
 }
 
+/// Write compact encoding into a Vec.
 pub fn to_vec<T>(value: &T) -> Result<Vec<u8>, EncodeError>
 where
     T: Serialize,

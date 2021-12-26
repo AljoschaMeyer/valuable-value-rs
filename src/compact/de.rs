@@ -102,20 +102,22 @@ impl de::Error for DecodeError {
 
 pub type Error = ParseError<DecodeError>;
 
-/// A structure that deserializes valuable values.
+/// A struct that deserializes valuable values from the [compact coding](https://github.com/AljoschaMeyer/valuable-value#compact-encoding).
 ///
-/// https://github.com/AljoschaMeyer/valuable-value/blob/main/README.md
+/// Does not enforce that the input must be empty after the first valid code.
 pub struct VVDeserializer<'de> {
     p: ParserHelper<'de>,
 }
 
 impl<'de> VVDeserializer<'de> {
+    /// Create a new [`VVDeserializer`](VVDeserializer) that deserializes from the input slice.
     pub fn new(input: &'de [u8]) -> Self {
         VVDeserializer {
             p: ParserHelper::new(input),
         }
     }
 
+    /// Return how many input bytes have been already read.
     pub fn position(&self) -> usize {
         self.p.position()
     }
@@ -779,8 +781,6 @@ mod tests {
 
     use serde::{Serialize, Deserialize};
 
-    use crate::test_type::SmallStruct;
-
     #[test]
     fn floats() {
         let f = f64::deserialize(&mut VVDeserializer::new(&[0b010_00000, 0x80, 0, 0, 0, 0, 0, 0, 0])).unwrap();
@@ -851,12 +851,6 @@ mod tests {
 
     #[test]
     fn structs() {
-        let v = SmallStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00011, 'f' as u8, 'o' as u8, 'o' as u8, 0b011_00001])).unwrap();
-        assert_eq!(v.foo, 1);
-
-        let v = SmallStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b101_00011, 0b011_11100, 'f' as u8, 0b011_11100, 'o' as u8, 0b011_11100, 'o' as u8, 0b011_00001])).unwrap();
-        assert_eq!(v.foo, 1);
-
         let v = NilStruct::deserialize(&mut VVDeserializer::new(&[0b111_00001, 0b100_00011, 'f' as u8, 'o' as u8, 'o' as u8, 0])).unwrap();
         assert_eq!(v.foo, ());
 
